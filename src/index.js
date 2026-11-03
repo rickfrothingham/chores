@@ -4,6 +4,9 @@
 //   columns          board columns. Each belongs to a category ('chore' or 'project').
 //                    Within a category, the LAST column is always "Done".
 //   people           who cards can be assigned to. `email` links a person to a login.
+//   task_people      owners of each card (any number). tasks.person_id is kept equal to
+//                    the first owner so an older version of the app would still work.
+//   recurrence_people  owners of each recurring template; copied onto the cards it creates.
 //   tasks            the cards (category 'chore' or 'project'; shown in the app as
 //                    "Chores/Tasks" and "Projects"). `scope` is 'family' (affects the
 //                    household) or 'personal' (one person's own business). Scope is a
@@ -119,6 +122,20 @@ const MIGRATIONS = [
     `ALTER TABLE tasks ADD COLUMN scope TEXT NOT NULL DEFAULT 'family'`,
     `ALTER TABLE recurrences ADD COLUMN scope TEXT NOT NULL DEFAULT 'family'`,
   ],
+  // 4: multiple owners. Copies each existing single owner into the new tables.
+  [
+    `CREATE TABLE IF NOT EXISTS task_people (
+       task_id INTEGER NOT NULL,
+       person_id INTEGER NOT NULL,
+       PRIMARY KEY (task_id, person_id))`,
+    `CREATE INDEX IF NOT EXISTS task_people_by_person ON task_people(person_id)`,
+    `INSERT OR IGNORE INTO task_people (task_id, person_id) SELECT id, person_id FROM tasks WHERE person_id IS NOT NULL`,
+    `CREATE TABLE IF NOT EXISTS recurrence_people (
+       recurrence_id INTEGER NOT NULL,
+       person_id INTEGER NOT NULL,
+       PRIMARY KEY (recurrence_id, person_id))`,
+    `INSERT OR IGNORE INTO recurrence_people (recurrence_id, person_id) SELECT id, person_id FROM recurrences WHERE person_id IS NOT NULL`,
+  ],
 ];
 
 let schemaReady = null;
@@ -223,11 +240,14 @@ async function housekeeping(db, today) {
     const stmts = [db.prepare('UPDATE recurrences SET next_date = ? WHERE id = ?').bind(next, r.id)];
     if (!(await hasOpenCard(db, r.id, doneId))) {
       const ts = now();
+      const res = await db.prepare(
+        `INSERT INTO tasks (title, notes, column_id, person_id, position, due_date, recurrence_id, category, scope, created_by, created_at, updated_at, last_activity_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'chore', ?, 'automatic', ?, ?, ?)`
+      ).bind(r.title, r.notes, firstId, r.person_id, await endPosition(db, firstId), due, r.id, scopeOf(r.scope), ts, ts, ts).run();
+      // The new card gets all of the template's owners.
       stmts.push(
-        db.prepare(
-          `INSERT INTO tasks (title, notes, column_id, person_id, position, due_date, recurrence_id, category, scope, created_by, created_at, updated_at, last_activity_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'chore', ?, 'automatic', ?, ?, ?)`
-        ).bind(r.title, r.notes, firstId, r.person_id, await endPosition(db, firstId), due, r.id, scopeOf(r.scope), ts, ts, ts)
+        db.prepare('INSERT OR IGNORE INTO task_people (task_id, person_id) SELECT ?, person_id FROM recurrence_people WHERE recurrence_id = ?')
+          .bind(res.meta.last_row_id, r.id)
       );
     }
     await db.batch(stmts);
@@ -253,6 +273,46 @@ async function onCompleted(db, task, today) {
 
 async function getTask(db, id) {
   return db.prepare('SELECT * FROM tasks WHERE id = ? AND deleted_at IS NULL').bind(id).first();
+}
+
+// Owners. Accepts `person_ids` (a list) or the older single `person_id`.
+// Returns null if neither was sent, otherwise the valid people in Settings order.
+async function cleanOwners(db, b) {
+  let ids = Array.isArray(b.person_ids) ? b.person_ids : b.person_id !== undefined ? [b.person_id] : null;
+  if (ids === null) return null;
+  ids = [...new Set(ids.map((x) => parseInt(x, 10)).filter(Number.isFinite))].slice(0, 20);
+  if (!ids.length) return [];
+  const { results } = await db
+    .prepare(`SELECT id, name FROM people WHERE deleted_at IS NULL AND id IN (${ids.map(() => '?').join(',')}) ORDER BY position, id`)
+    .bind(...ids)
+    .all();
+  return results;
+}
+const OWNER_TABLES = { task: ['task_people', 'task_id'], recurrence: ['recurrence_people', 'recurrence_id'] };
+async function ownerIds(db, kind, id) {
+  const [table, key] = OWNER_TABLES[kind];
+  const { results } = await db
+    .prepare(`SELECT o.person_id FROM ${table} o JOIN people p ON p.id = o.person_id WHERE o.${key} = ? AND p.deleted_at IS NULL ORDER BY p.position, p.id`)
+    .bind(id)
+    .all();
+  return results.map((r) => r.person_id);
+}
+function setOwnerStmts(db, kind, id, owners) {
+  const [table, key] = OWNER_TABLES[kind];
+  return [
+    db.prepare(`DELETE FROM ${table} WHERE ${key} = ?`).bind(id),
+    ...owners.map((p) => db.prepare(`INSERT INTO ${table} (${key}, person_id) VALUES (?, ?)`).bind(id, p.id)),
+  ];
+}
+// Map of id -> [person ids] for every row of an owner table (living people only).
+async function ownerMap(db, kind) {
+  const [table, key] = OWNER_TABLES[kind];
+  const { results } = await db
+    .prepare(`SELECT o.${key} AS k, o.person_id FROM ${table} o JOIN people p ON p.id = o.person_id WHERE p.deleted_at IS NULL ORDER BY p.position, p.id`)
+    .all();
+  const m = {};
+  for (const r of results) (m[r.k] = m[r.k] || []).push(r.person_id);
+  return m;
 }
 
 // ---------- Middleware ----------
@@ -288,6 +348,7 @@ app.get('/api/state', async (c) => {
     db.prepare('SELECT * FROM recurrences WHERE deleted_at IS NULL ORDER BY title').all(),
   ]);
 
+  const [taskOwners, recOwners] = await Promise.all([ownerMap(db, 'task'), ownerMap(db, 'recurrence')]);
   const email = c.get('email');
   const me = people.results.find((p) => p.email === email);
   return c.json({
@@ -297,9 +358,9 @@ app.get('/api/state', async (c) => {
     columns: cols,
     done_column_ids: { chore: doneIdOf(cols, 'chore'), project: doneIdOf(cols, 'project') },
     people: people.results,
-    tasks: tasks.results,
+    tasks: tasks.results.map((t) => ({ ...t, person_ids: taskOwners[t.id] || [] })),
     recurrences: recs.results.map((r) => ({
-      id: r.id, title: r.title, notes: r.notes, person_id: r.person_id, mode: r.mode,
+      id: r.id, title: r.title, notes: r.notes, person_id: r.person_id, person_ids: recOwners[r.id] || [], mode: r.mode,
       freq: r.freq, every: r.every, weekdays: ruleOf(r).weekdays, month_day: r.month_day,
       anchor: r.anchor, interval_days: r.interval_days, next_date: r.next_date, paused: !!r.paused, scope: scopeOf(r.scope),
       description: describe(ruleOf(r)),
@@ -340,16 +401,17 @@ app.post('/api/tasks', async (c) => {
   if (b.due_date && !isYmd(b.due_date)) return bad(c, 'Bad due date.');
   const ts = now();
   const doneId = cols[cols.length - 1].id;
+  const owners = (await cleanOwners(db, b)) || [];
   const res = await db
     .prepare(
       `INSERT INTO tasks (title, notes, column_id, person_id, position, due_date, category, scope, created_by, created_at, updated_at, last_activity_at, done_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .bind(title, str(b.notes, 2000), columnId, intOrNull(b.person_id), await endPosition(db, columnId),
+    .bind(title, str(b.notes, 2000), columnId, owners.length ? owners[0].id : null, await endPosition(db, columnId),
       b.due_date || null, category, scopeOf(b.scope), c.get('email'), ts, ts, ts, columnId === doneId ? ts : null)
     .run();
   const id = res.meta.last_row_id;
-  await db.batch(logStmts(db, id, 'event', 'Created', c.get('email')));
+  await db.batch([...setOwnerStmts(db, 'task', id, owners), ...logStmts(db, id, 'event', 'Created', c.get('email'))]);
   return c.json({ ok: true, id });
 });
 
@@ -363,7 +425,7 @@ app.get('/api/tasks/:id', async (c) => {
     db.prepare('SELECT id, text, position, done_at, done_by FROM checklist_items WHERE task_id = ? AND deleted_at IS NULL ORDER BY position, id').bind(id).all(),
     db.prepare('SELECT id, kind, text, by, at FROM activity WHERE task_id = ? ORDER BY at DESC, id DESC LIMIT 100').bind(id).all(),
   ]);
-  return c.json({ task, checklist: items.results, activity: log.results });
+  return c.json({ task: { ...task, person_ids: await ownerIds(db, 'task', id) }, checklist: items.results, activity: log.results });
 });
 
 app.patch('/api/tasks/:id', async (c) => {
@@ -389,12 +451,14 @@ app.patch('/api/tasks/:id', async (c) => {
     const n = str(b.notes, 2000);
     if (n !== task.notes) { set('notes', n); events.push('Edited the description'); }
   }
-  if (b.person_id !== undefined) {
-    const p = intOrNull(b.person_id);
-    if (p !== task.person_id) {
-      set('person_id', p);
-      const who = p ? await db.prepare('SELECT name FROM people WHERE id = ?').bind(p).first() : null;
-      events.push(who ? 'Assigned to ' + who.name : 'Unassigned');
+  let newOwners = null;
+  const owners = await cleanOwners(db, b);
+  if (owners) {
+    const current = await ownerIds(db, 'task', id);
+    if (current.join(',') !== owners.map((p) => p.id).join(',')) {
+      newOwners = owners;
+      set('person_id', owners.length ? owners[0].id : null);
+      events.push(owners.length ? 'Assigned to ' + owners.map((p) => p.name).join(', ') : 'Unassigned');
     }
   }
   if (b.due_date !== undefined) {
@@ -429,6 +493,7 @@ app.patch('/api/tasks/:id', async (c) => {
   set('updated_at', now());
   vals.push(id);
   const stmts = [db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).bind(...vals)];
+  if (newOwners) stmts.push(...setOwnerStmts(db, 'task', id, newOwners));
   for (const e of events) stmts.push(...logStmts(db, id, 'event', e, email));
   await db.batch(stmts);
   if (completed) await onCompleted(db, task, todayIn(tz(c)));
@@ -608,8 +673,13 @@ app.delete('/api/people/:id', async (c) => {
   const id = parseInt(c.req.param('id'), 10);
   await db.batch([
     db.prepare('UPDATE people SET deleted_at = ?, email = NULL WHERE id = ?').bind(now(), id),
-    db.prepare('UPDATE tasks SET person_id = NULL WHERE person_id = ?').bind(id),
-    db.prepare('UPDATE recurrences SET person_id = NULL WHERE person_id = ?').bind(id),
+    db.prepare('DELETE FROM task_people WHERE person_id = ?').bind(id),
+    db.prepare('DELETE FROM recurrence_people WHERE person_id = ?').bind(id),
+    // Keep the "first owner" columns pointing at a remaining owner, if any.
+    db.prepare(`UPDATE tasks SET person_id = (SELECT o.person_id FROM task_people o JOIN people p ON p.id = o.person_id
+                  WHERE o.task_id = tasks.id ORDER BY p.position, p.id LIMIT 1) WHERE person_id = ?`).bind(id),
+    db.prepare(`UPDATE recurrences SET person_id = (SELECT o.person_id FROM recurrence_people o JOIN people p ON p.id = o.person_id
+                  WHERE o.recurrence_id = recurrences.id ORDER BY p.position, p.id LIMIT 1) WHERE person_id = ?`).bind(id),
   ]);
   return c.json({ ok: true });
 });
@@ -617,7 +687,7 @@ app.delete('/api/people/:id', async (c) => {
 // ---------- Recurring chores/tasks ----------
 
 function parseRecurrence(b, today) {
-  const r = { title: str(b.title, 120), notes: str(b.notes, 1000), person_id: intOrNull(b.person_id), scope: scopeOf(b.scope) };
+  const r = { title: str(b.title, 120), notes: str(b.notes, 1000), scope: scopeOf(b.scope) };
   if (!r.title) return { error: 'Give the task a name.' };
   if (b.mode === 'after_done') {
     const n = parseInt(b.interval_days, 10);
@@ -647,15 +717,19 @@ function parseRecurrence(b, today) {
 
 app.post('/api/recurrences', async (c) => {
   const db = c.env.DB;
-  const r = parseRecurrence(await c.req.json(), todayIn(tz(c)));
+  const b = await c.req.json();
+  const r = parseRecurrence(b, todayIn(tz(c)));
   if (r.error) return bad(c, r.error);
-  await db
+  const owners = (await cleanOwners(db, b)) || [];
+  r.person_id = owners.length ? owners[0].id : null;
+  const res = await db
     .prepare(
       `INSERT INTO recurrences (title, notes, person_id, scope, mode, freq, every, weekdays, month_day, anchor, interval_days, next_date, created_by, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(r.title, r.notes, r.person_id, r.scope, r.mode, r.freq, r.every, r.weekdays, r.month_day, r.anchor, r.interval_days, r.first_date, c.get('email'), now())
     .run();
+  await db.batch(setOwnerStmts(db, 'recurrence', res.meta.last_row_id, owners));
   return c.json({ ok: true });
 });
 
@@ -669,6 +743,9 @@ app.patch('/api/recurrences/:id', async (c) => {
   }
   const r = parseRecurrence(b, todayIn(tz(c)));
   if (r.error) return bad(c, r.error);
+  const owners = await cleanOwners(db, b);
+  const current = await db.prepare('SELECT person_id FROM recurrences WHERE id = ?').bind(id).first();
+  r.person_id = owners ? (owners.length ? owners[0].id : null) : current ? current.person_id : null;
   // Editing restarts the schedule from the given start date.
   // (If an open card exists for an after-done chore, the next date waits for it.)
   const existing = await db.prepare('SELECT next_date, mode FROM recurrences WHERE id = ?').bind(id).first();
@@ -681,6 +758,7 @@ app.patch('/api/recurrences/:id', async (c) => {
     )
     .bind(r.title, r.notes, r.person_id, r.scope, r.mode, r.freq, r.every, r.weekdays, r.month_day, r.anchor, r.interval_days, next, id)
     .run();
+  if (owners) await db.batch(setOwnerStmts(db, 'recurrence', id, owners));
   return c.json({ ok: true });
 });
 

@@ -9,9 +9,9 @@ One app with three views:
 Two sets of filter chips apply to every view and combine with each other:
 
 - **All / Family / Personal:** what the item is for. *Family* affects the household (repainting the house); *Personal* is one person's own business (a doctor's appointment). This is a label for filtering, **not** a privacy setting: everyone can still see everything. New items default to Family, or to Personal while the Personal filter is on.
-- **Everyone / Mine / each person / Unassigned:** who it's assigned to.
+- **Everyone / Mine / each person / Unassigned:** who it's assigned to. Items can have **several owners**; a shared item shows up under each of its owners.
 
-Personal items show a small "Personal" tag on the card. Recurring chores/tasks have the flag too, and the cards they create inherit it.
+On cards, owners appear as colored dots with names (up to two; beyond that "Rick +2"), and the card's left edge has one colored stripe per owner. Personal items show a small "Personal" tag. Recurring chores/tasks have the flag too, and the cards they create inherit it.
 
 Runs on Cloudflare Workers with a D1 database. Login is handled by Cloudflare Access.
 
@@ -44,7 +44,7 @@ Runs on Cloudflare Workers with a D1 database. Login is handled by Cloudflare Ac
 
 ## Changing the database later
 
-Schema changes go in the `MIGRATIONS` list in `src/index.js`. Add a new entry at the end and never edit old ones. Each runs once, automatically, on the first request after deploy. Migration 2 (projects) and 3 (family/personal flag) only add tables and columns; existing data is untouched. Internally, chores/tasks are still stored with category `chore`.
+Schema changes go in the `MIGRATIONS` list in `src/index.js`. Add a new entry at the end and never edit old ones. Each runs once, automatically, on the first request after deploy. Migrations 2 (projects), 3 (family/personal flag) and 4 (multiple owners) only add tables and columns; existing data is untouched. Migration 4 copies each item's single owner into the new `task_people` / `recurrence_people` tables; `tasks.person_id` is kept equal to the first owner so an older version of the app would still work if ever rolled back. Internally, chores/tasks are still stored with category `chore`.
 
 ## Backup
 
