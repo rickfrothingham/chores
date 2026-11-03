@@ -134,6 +134,17 @@
   .center { text-align: center; } .loading { margin: 80px auto; color: var(--muted); }
   input[type=color] { width: 36px; height: 32px; padding: 2px; border-radius: 8px; }
 
+  /* archive */
+  .show-finished { display: block; width: 100%; margin-top: 8px; padding: 8px; font-size: 14px; color: var(--muted); text-align: center; }
+  .show-finished:hover { color: var(--ink); }
+  .arch-month { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 18px 4px 6px; }
+  .arch-item { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-top: 1px solid var(--line); cursor: pointer; }
+  .arch-item:first-child { border-top: 0; }
+  .arch-item:hover { background: var(--bg); }
+  .arch-item .grow { flex: 1; min-width: 0; }
+  .arch-item .t { font-weight: 550; word-wrap: break-word; }
+  .readonly-note { white-space: pre-wrap; background: var(--bg); border-radius: 10px; padding: 10px 12px; }
+
   /* checklist + activity */
   .ck { display: flex; align-items: center; gap: 10px; padding: 8px 4px; border-top: 1px solid var(--line); }
   .ck:first-child { border-top: 0; }
@@ -401,7 +412,8 @@ function renderBoard(cat) {
     board.append(el('section', { class: 'column' },
       el('div', { class: 'col-head' }, el('h2', {}, col.name, ' ', el('span', { class: 'count' }, tasks.length || '')),
         isDoneCol ? null : el('button', { class: 'col-add', 'aria-label': 'Add to ' + col.name, onclick: () => openNew(cat, col.id) }, '+')),
-      list));
+      list,
+      isDoneCol ? el('button', { class: 'show-finished', type: 'button', onclick: () => openArchive({ category: cat, kind: 'finished' }) }, 'Show all finished →') : null));
     Sortable.create(list, {
       group: 'cards-' + cat, animation: 150, delay: 180, delayOnTouchOnly: true, filter: '.check',
       preventOnFilter: false, sort: !isDoneCol,
@@ -638,6 +650,124 @@ async function openProject(id) {
   openSheet(head('Project'), details, checklist, activity);
 }
 
+// ===================== archive (finished & deleted) =====================
+// Lists cards that have left the board, newest first, grouped by month. The
+// board's filters (Family/Personal and people) apply here too.
+let archiveOpts = { category: 'chore', kind: 'finished', q: '' };
+let archiveTimer = null;
+
+function openArchive(opts) {
+  archiveOpts = { ...archiveOpts, ...opts };
+  const o = archiveOpts;
+  const listWrap = el('div', {}, el('div', { class: 'hint center', style: { padding: '20px' } }, 'Loading…'));
+  const seg = (items, cur, key) => el('div', { class: 'seg' }, items.map(([v, label]) => el('button', { type: 'button', class: cur === v ? 'on' : '',
+    onclick: () => openArchive({ [key]: v }) }, label)));
+  const search = el('input', { type: 'search', placeholder: 'Search titles and notes…', value: o.q, maxlength: 100 });
+  search.addEventListener('input', () => {
+    clearTimeout(archiveTimer);
+    archiveTimer = setTimeout(() => { archiveOpts.q = search.value; fillArchive(listWrap); }, 300);
+  });
+  const filtered = scopeFilter !== 'all' || filter !== 'all';
+  openSheet(
+    head(o.kind === 'deleted' ? 'Deleted items' : 'Finished items'),
+    el('div', { class: 'row', style: { flexWrap: 'wrap', gap: '8px', marginTop: '6px' } },
+      seg([['chore', 'Chores/Tasks'], ['project', 'Projects']], o.category, 'category'),
+      seg([['finished', 'Finished'], ['deleted', 'Deleted']], o.kind, 'kind')),
+    el('div', { style: { marginTop: '10px' } }, search),
+    filtered ? el('div', { class: 'hint' }, 'Filtered like the board: ' + filterLabel() + '. ',
+      el('button', { class: 'icon-btn', style: { padding: 0, textDecoration: 'underline' }, onclick: () => {
+        scopeFilter = 'all'; filter = 'all'; lsSet('scope', 'all'); lsSet('filter', 'all'); openArchive({}); } }, 'Show everyone')) : null,
+    listWrap);
+  fillArchive(listWrap);
+}
+
+function filterLabel() {
+  const parts = [];
+  if (scopeFilter !== 'all') parts.push(SCOPE_LABEL[scopeFilter]);
+  if (filter === 'mine') parts.push('Mine');
+  else if (filter === 'none') parts.push('Unassigned');
+  else if (filter !== 'all' && person(+filter)) parts.push(person(+filter).name);
+  return parts.join(' · ');
+}
+
+async function fillArchive(listWrap) {
+  const o = archiveOpts;
+  let data;
+  try {
+    data = await api('GET', 'api/archive?category=' + o.category + '&kind=' + o.kind + '&q=' + encodeURIComponent(o.q || ''));
+  } catch (x) { listWrap.replaceChildren(el('div', { class: 'err' }, x.message)); return; }
+  if (o !== archiveOpts || data.category !== archiveOpts.category || data.kind !== archiveOpts.kind) return; // a newer view replaced this one
+  const items = data.items.filter(visible);
+  if (!items.length) {
+    listWrap.replaceChildren(el('div', { class: 'hint center', style: { padding: '30px 10px' } },
+      o.q ? 'Nothing matches “' + o.q + '”.' : o.kind === 'deleted' ? 'Nothing has been deleted.' : 'Nothing finished yet.'));
+    return;
+  }
+  const verb = o.kind === 'deleted' ? 'Deleted' : 'Finished';
+  const groups = [];
+  for (const t of items) {
+    const label = new Date(t.ended_at).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    if (!groups.length || groups[groups.length - 1].label !== label) groups.push({ label, items: [] });
+    groups[groups.length - 1].items.push(t);
+  }
+  listWrap.replaceChildren(...groups.flatMap((g) => [
+    el('div', { class: 'arch-month' }, g.label),
+    el('div', { class: 'list' }, g.items.map((t) => {
+      const owners = ownersOf(t);
+      const meta = [verb + ' ' + when(t.ended_at)];
+      if (owners.length) meta.push(owners.map((x) => x.name).join(', '));
+      if (t.scope === 'personal') meta.push('Personal');
+      if (t.checklist_total) meta.push('Checklist ' + t.checklist_done + '/' + t.checklist_total);
+      if (t.recurrence_id) meta.push('↻ Recurring');
+      return el('div', { class: 'arch-item', onclick: () => openArchived(t.id) },
+        el('div', { class: 'grow' }, el('div', { class: 't' }, t.title), el('div', { class: 'small' }, meta.join(' · '))),
+        el('span', { class: 'small' }, '›'));
+    })),
+  ]), ...(data.truncated ? [el('div', { class: 'hint center' }, 'Showing the most recent 500. Search to find older items.')] : []));
+}
+
+// Read-only view of a finished or deleted card, with Restore.
+async function openArchived(id) {
+  let d;
+  try { d = await api('GET', 'api/tasks/' + id); } catch (x) { toast(x.message); return; }
+  const t = d.task;
+  const owners = (t.person_ids || []).map(person).filter(Boolean);
+  const status = t.deleted_at ? 'Deleted ' + when(t.deleted_at) : 'Finished ' + when(t.done_at || t.archived_at || t.updated_at);
+  const row = (label, value) => value ? [el('label', { class: 'f' }, label), el('div', {}, value)] : null;
+  const back = () => openArchive({});
+  openSheet(
+    el('div', { class: 'sheet-head' },
+      el('button', { class: 'x', type: 'button', 'aria-label': 'Back', onclick: back, style: { fontSize: '18px' } }, '‹'),
+      el('h3', {}, t.title),
+      el('button', { class: 'x', type: 'button', 'aria-label': 'Close', onclick: closeSheet }, '×')),
+    el('div', { class: 'hint' }, LABEL[t.category] + ' · ' + status),
+    row('Who', owners.length ? el('div', { class: 'card-meta', style: { marginTop: 0, fontSize: '15px', color: 'var(--ink)' } },
+      owners.map((o) => el('span', {}, el('span', { class: 'dot', style: { background: o.color } }), o.name))) : 'Nobody'),
+    row('For', SCOPE_LABEL[t.scope] || 'Family'),
+    row('Due date', t.due_date ? shortDate(t.due_date) + ', ' + t.due_date.slice(0, 4) : null),
+    row(t.category === 'project' ? 'Description' : 'Notes', t.notes ? el('div', { class: 'readonly-note' }, t.notes) : null),
+    d.checklist.length ? el('div', { class: 'section' }, el('h4', {}, 'Checklist', el('span', { style: { fontWeight: 500 } },
+      d.checklist.filter((i) => i.done_at).length + ' of ' + d.checklist.length)),
+      d.checklist.map((i) => el('div', { class: 'ck' + (i.done_at ? ' done' : '') },
+        el('span', { style: { width: '22px', textAlign: 'center' } }, i.done_at ? '☑' : '☐'),
+        el('div', { class: 't' }, el('span', {}, i.text))))) : null,
+    d.activity.length ? el('div', { class: 'section' }, el('h4', {}, t.category === 'project' ? 'Updates & history' : 'History'),
+      el('div', { class: 'log', style: { marginTop: 0 } }, d.activity.map((a) => a.kind === 'note'
+        ? el('div', { class: 'log-note' }, el('div', { class: 'who' }, whoName(a.by) + ' · ' + when(a.at)), el('div', { style: { whiteSpace: 'pre-wrap' } }, a.text))
+        : el('div', { class: 'log-event' }, a.text + ' · ' + whoName(a.by) + ' · ' + when(a.at))))) : null,
+    el('div', { class: 'actions' },
+      el('button', { class: 'btn ghost', type: 'button', onclick: back }, 'Back'),
+      el('button', { class: 'btn primary', type: 'button', onclick: async (e) => {
+        e.target.disabled = true;
+        try {
+          const r = await api('POST', 'api/tasks/' + id + '/restore');
+          await refresh();
+          toast('Restored to ' + colName(r.column_id));
+          back();
+        } catch (x) { toast(x.message); e.target.disabled = false; }
+      } }, 'Restore to board')));
+}
+
 // ===================== recurring chores =====================
 function openRecurringList() {
   const items = S.recurrences.map((r) => {
@@ -765,6 +895,11 @@ function openSettings() {
     ),
     columnsEditor('chore'),
     columnsEditor('project'),
+    el('div', { class: 'section' }, el('h4', {}, 'Finished & deleted'),
+      el('div', { class: 'hint', style: { marginTop: 0, marginBottom: '10px' } }, 'Nothing is ever erased. Finished and deleted items can be looked up and restored here.'),
+      el('div', { class: 'row' },
+        el('button', { class: 'hbtn', onclick: () => openArchive({ category: tab === 'project' ? 'project' : 'chore', kind: 'finished' }) }, 'Finished items'),
+        el('button', { class: 'hbtn', onclick: () => openArchive({ category: tab === 'project' ? 'project' : 'chore', kind: 'deleted' }) }, 'Deleted items'))),
     err,
     el('div', { class: 'hint', style: { marginTop: '18px' } }, 'This phone is set to ' + (S.me.name || 'nobody') + ' · ',
       el('button', { class: 'icon-btn', style: { padding: 0, textDecoration: 'underline' }, onclick: () => { setWho(''); closeSheetQuiet(); renderWho(); } }, 'Change')));

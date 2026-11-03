@@ -482,10 +482,11 @@ keyed.post('/api/tasks', async (c) => {
 });
 
 // Full detail for one card: the card, its checklist and its activity log.
+// Also returns deleted cards, so the archive can show them (read-only).
 keyed.get('/api/tasks/:id', async (c) => {
   const db = c.env.DB;
   const id = parseInt(c.req.param('id'), 10);
-  const task = await getTask(db, id);
+  const task = await db.prepare('SELECT * FROM tasks WHERE id = ?').bind(id).first();
   if (!task) return c.json({ error: 'That card no longer exists.' }, 404);
   const [items, log] = await Promise.all([
     db.prepare('SELECT id, text, position, done_at, done_by FROM checklist_items WHERE task_id = ? AND deleted_at IS NULL ORDER BY position, id').bind(id).all(),
@@ -575,6 +576,70 @@ keyed.delete('/api/tasks/:id', async (c) => {
   await db.prepare('UPDATE tasks SET deleted_at = ? WHERE id = ?').bind(now(), id).run();
   if (task.column_id !== doneIdOf(await allColumns(db), task.category)) await onCompleted(db, task, todayIn(tz(c)));
   return c.json({ ok: true });
+});
+
+// ---------- Archive: finished and deleted cards ----------
+// Nothing is ever erased. Cards leave the board in two ways:
+//   finished: moved to Done (and after 7/30 days, archived_at is set and they leave the board)
+//   deleted:  removed with the Delete button (deleted_at is set)
+// This lists either kind for one board, newest first, with an optional search.
+
+const ARCHIVE_LIMIT = 500;
+
+keyed.get('/api/archive', async (c) => {
+  const db = c.env.DB;
+  const category = categoryOf(c.req.query('category'));
+  const kind = c.req.query('kind') === 'deleted' ? 'deleted' : 'finished';
+  const q = str(c.req.query('q'), 100);
+  const doneId = doneIdOf(await allColumns(db), category);
+
+  const where = ['t.category = ?'], vals = [category];
+  if (kind === 'deleted') where.push('t.deleted_at IS NOT NULL');
+  else {
+    where.push('t.deleted_at IS NULL', '(t.archived_at IS NOT NULL OR t.column_id = ?)');
+    vals.push(doneId);
+  }
+  if (q) {
+    const like = '%' + q.replace(/[\\%_]/g, (m) => '\\' + m) + '%';
+    where.push("(t.title LIKE ? ESCAPE '\\' OR t.notes LIKE ? ESCAPE '\\')");
+    vals.push(like, like);
+  }
+  const ended = kind === 'deleted' ? 't.deleted_at' : 'COALESCE(t.done_at, t.archived_at, t.updated_at)';
+  const { results } = await db
+    .prepare(
+      `SELECT t.id, t.title, t.notes, t.column_id, t.category, t.scope, t.due_date, t.recurrence_id,
+              t.done_at, t.archived_at, t.deleted_at, t.created_at, ${ended} AS ended_at,
+              (SELECT COUNT(*) FROM checklist_items i WHERE i.task_id = t.id AND i.deleted_at IS NULL) AS checklist_total,
+              (SELECT COUNT(*) FROM checklist_items i WHERE i.task_id = t.id AND i.deleted_at IS NULL AND i.done_at IS NOT NULL) AS checklist_done
+         FROM tasks t WHERE ${where.join(' AND ')}
+        ORDER BY ended_at DESC, t.id DESC LIMIT ${ARCHIVE_LIMIT + 1}`
+    )
+    .bind(...vals)
+    .all();
+  const owners = await ownerMap(db, 'task');
+  return c.json({
+    kind, category,
+    truncated: results.length > ARCHIVE_LIMIT,
+    items: results.slice(0, ARCHIVE_LIMIT).map((t) => ({ ...t, person_ids: owners[t.id] || [] })),
+  });
+});
+
+// Put a finished or deleted card back on the board: in the column it was in,
+// or the board's first column if it was in Done (or that column is gone).
+keyed.post('/api/tasks/:id/restore', async (c) => {
+  const db = c.env.DB;
+  const id = parseInt(c.req.param('id'), 10);
+  const task = await db.prepare('SELECT * FROM tasks WHERE id = ?').bind(id).first();
+  if (!task) return c.json({ error: 'That card no longer exists.' }, 404);
+  const cols = colsOf(await allColumns(db), task.category);
+  const doneId = cols[cols.length - 1].id;
+  const target = task.column_id !== doneId && cols.some((x) => x.id === task.column_id) ? task.column_id : cols[0].id;
+  await db.batch([
+    db.prepare('UPDATE tasks SET deleted_at = NULL, archived_at = NULL, done_at = NULL, column_id = ?, position = ?, updated_at = ? WHERE id = ?')
+      .bind(target, await endPosition(db, target), now(), id),
+    ...logStmts(db, id, 'event', 'Restored to ' + cols.find((x) => x.id === target).name, c.get('who')),
+  ]);
+  return c.json({ ok: true, column_id: target });
 });
 
 // ---------- Checklist ----------

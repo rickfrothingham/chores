@@ -28,6 +28,7 @@ Each phone asks **"Who's using this phone?"** once and remembers the answer. Tha
 ## How it works
 
 - **Columns** for each board are editable in Settings. The **last column is always Done**. Done chores leave the board after 7 days, done projects after 30 (hidden, not erased).
+- **Nothing is ever erased.** Finished items (including ones that have left the board) and deleted items can be looked up under **Show all finished →** at the bottom of each Done column, or in Settings → *Finished & deleted*. The list is grouped by month, searchable, and follows the board's filters. Tap an item to see its details, checklist and history, and **Restore to board** to put it back: into the column it was in, or the first column if it was in Done.
 - **Moving cards:** drag on an iPad or computer. On a phone, tap a card and choose a column, or tap the circle to mark it done.
 - **Recurring chores/tasks** (↻ on the Chores/Tasks tab) add a card when due, either on a fixed schedule or N days after the last one was done. No duplicates if the previous card is still open.
 - Nothing runs on a timer. Due cards are created whenever someone opens the app.
