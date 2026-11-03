@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Household</title>
 <meta name="theme-color" content="#2b4c7e">
-<link rel="manifest" href="/manifest.webmanifest">
+<link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="icon" href="/icon-512.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -180,8 +180,18 @@ function el(tag, attrs = {}, ...kids) {
   for (const k of kids.flat(Infinity)) if (k != null && k !== false) e.append(k.nodeType ? k : String(k));
   return e;
 }
+// Who is using this phone (a person id). Stored on the phone only and sent with
+// every request; it drives "Mine" and the names in the history. Storage can be
+// unavailable (private browsing), so fall back to memory for this visit.
+let whoMemory = '';
+function getWho() { try { return localStorage.getItem('who_id') || whoMemory; } catch { return whoMemory; } }
+function setWho(id) { whoMemory = String(id || ''); try { id ? localStorage.setItem('who_id', String(id)) : localStorage.removeItem('who_id'); } catch {} }
+
+// Paths are relative ('api/state'), so they stay inside the secret /k/<key>/ address.
 async function api(method, path, body) {
-  const res = await fetch(path, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  const headers = { 'x-who-id': getWho() };
+  if (body) headers['content-type'] = 'application/json';
+  const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
   let data = {}; try { data = await res.json(); } catch {}
   if (!res.ok) throw new Error(data.message || data.error || 'Error ' + res.status);
   return data;
@@ -192,10 +202,14 @@ const ownersOf = (x) => (x.person_ids || []).map(person).filter(Boolean);
 const colsOf = (cat) => S.columns.filter((c) => c.category === cat);
 const colName = (id) => (S.columns.find((c) => c.id === id) || {}).name || '';
 const isDone = (t) => t.column_id === S.done_column_ids[t.category];
-function whoName(email) {
-  if (!email || email === 'automatic') return 'Automatic';
-  const p = S.people.find((x) => x.email === email);
-  return p ? p.name : email.split('@')[0];
+// Name shown in the history. New entries store the person's name; entries from
+// the old email login stored an address, which is mapped back to a name.
+function whoName(by) {
+  if (by === 'automatic') return 'Automatic';
+  if (!by) return 'Someone';
+  if (!by.includes('@')) return by;
+  const p = S.people.find((x) => x.email === by);
+  return p ? p.name : by.split('@')[0];
 }
 
 // ---- dates ----
@@ -251,8 +265,10 @@ function toast(msg) {
 // ===================== load =====================
 async function load() {
   try {
-    S = await api('GET', '/api/state');
-    S.setup_done ? render() : renderSetup();
+    S = await api('GET', 'api/state');
+    if (!S.setup_done) renderSetup();
+    else if (!S.me.person_id) renderWho();      // first visit on this phone, or that person was removed
+    else render();
   } catch (e) {
     root.className = 'center'; root.style.display = '';
     root.replaceChildren(el('div', { class: 'loading' }, e.message, el('br'), el('br'), el('button', { class: 'hbtn primary', onclick: load }, 'Try again')));
@@ -275,10 +291,27 @@ function renderSetup() {
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!inputs[0].value.trim()) { err.textContent = 'Enter your name.'; return; }
-    try { await api('POST', '/api/setup', { people: inputs.map((i) => ({ name: i.value })) }); load(); }
+    try {
+      await api('POST', 'api/setup', { people: inputs.map((i) => ({ name: i.value })) });
+      await refresh();
+      setWho(S.people[0].id);                 // whoever set it up is the first name
+      load();
+    }
     catch (x) { err.textContent = x.message; }
   });
   root.replaceChildren(form);
+}
+
+// ===================== who's using this phone =====================
+// Asked once per phone (and once more inside an iPhone home-screen app, which
+// keeps its own storage). Not security: anyone with the link is trusted.
+function renderWho() {
+  root.className = ''; root.style.display = '';
+  root.replaceChildren(el('div', { class: 'sheet', style: { margin: '24px auto', borderRadius: '20px' } },
+    el('h3', {}, 'Who’s using this phone?'),
+    el('div', { class: 'hint' }, 'Used for the “Mine” filter and to show who made changes. You can change it later in Settings.'),
+    el('div', { class: 'seg', style: { marginTop: '16px' } }, S.people.map((p) => el('button', { type: 'button', style: { padding: '12px 18px', fontSize: '17px' },
+      onclick: () => { setWho(p.id); load(); } }, el('span', { class: 'dot', style: { background: p.color } }), p.name)))));
 }
 
 // ===================== main layout =====================
@@ -345,7 +378,7 @@ function cardEl(t, opts = {}) {
   check.addEventListener('click', async (e) => {
     e.stopPropagation(); check.disabled = true;
     const target = done ? colsOf(t.category)[0].id : S.done_column_ids[t.category];
-    try { await api('PATCH', '/api/tasks/' + t.id, { column_id: target }); } catch (x) { toast(x.message); }
+    try { await api('PATCH', 'api/tasks/' + t.id, { column_id: target }); } catch (x) { toast(x.message); }
     load();
   });
   return el('div', { class: 'card' + (done ? ' done' : '') + (q >= STALE_DAYS ? ' stale' : ''), 'data-id': t.id,
@@ -386,7 +419,7 @@ async function onDrop(evt) {
   const posOf = (node) => { const x = node && node.dataset && S.tasks.find((y) => y.id === +node.dataset.id); return x ? x.position : null; };
   const prev = posOf(card.previousElementSibling), next = posOf(card.nextElementSibling);
   const position = prev != null && next != null ? (prev + next) / 2 : prev != null ? prev + 1 : next != null ? next - 1 : 1;
-  try { await api('PATCH', '/api/tasks/' + id, { column_id: colId, position }); } catch (x) { toast(x.message); }
+  try { await api('PATCH', 'api/tasks/' + id, { column_id: colId, position }); } catch (x) { toast(x.message); }
   load();
 }
 
@@ -424,6 +457,7 @@ function renderToday() {
 const sheetBg = $('#sheetBg'), sheet = $('#sheet');
 function openSheet(...content) { sheet.replaceChildren(...content.flat(Infinity).filter(Boolean)); sheetBg.classList.add('open'); }
 function closeSheet() { sheetBg.classList.remove('open'); load(); }
+function closeSheetQuiet() { sheetBg.classList.remove('open'); }
 sheetBg.addEventListener('click', (e) => { if (e.target === sheetBg) closeSheet(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && sheetBg.classList.contains('open')) closeSheet(); });
 const head = (title) => el('div', { class: 'sheet-head' }, el('h3', {}, title), el('button', { class: 'x', type: 'button', 'aria-label': 'Close', onclick: closeSheet }, '×'));
@@ -493,7 +527,7 @@ function openNew(cat, columnId) {
   form.addEventListener('submit', async (e) => {
     e.preventDefault(); err.textContent = '';
     try {
-      const r = await api('POST', '/api/tasks', { category: f.category, scope: f.scope, title: title.value, notes: notes.value, person_ids: f.person_ids,
+      const r = await api('POST', 'api/tasks', { category: f.category, scope: f.scope, title: title.value, notes: notes.value, person_ids: f.person_ids,
         column_id: f.column_id, due_date: due.value || null });
       if (f.category === 'project') { await refresh(); openProject(r.id); } else closeSheet();
     } catch (x) { err.textContent = x.message; }
@@ -501,7 +535,7 @@ function openNew(cat, columnId) {
   openSheet(form);
   setTimeout(() => title.focus(), 60);
 }
-async function refresh() { S = await api('GET', '/api/state'); }
+async function refresh() { S = await api('GET', 'api/state'); }
 
 // ----- chore (simple) -----
 function openChore(t) {
@@ -522,12 +556,12 @@ function openChore(t) {
     el('label', { class: 'f' }, 'Notes'), notes,
     err,
     el('div', { class: 'actions' },
-      confirmBtn('Delete', async () => { await api('DELETE', '/api/tasks/' + t.id); closeSheet(); }),
+      confirmBtn('Delete', async () => { await api('DELETE', 'api/tasks/' + t.id); closeSheet(); }),
       el('button', { type: 'submit', class: 'btn primary' }, 'Save')));
   form.addEventListener('submit', async (e) => {
     e.preventDefault(); err.textContent = '';
     try {
-      await api('PATCH', '/api/tasks/' + t.id, { title: title.value, notes: notes.value, person_ids: f.person_ids, scope: f.scope, column_id: f.column_id, due_date: due.value || null });
+      await api('PATCH', 'api/tasks/' + t.id, { title: title.value, notes: notes.value, person_ids: f.person_ids, scope: f.scope, column_id: f.column_id, due_date: due.value || null });
       closeSheet();
     } catch (x) { err.textContent = x.message; }
   });
@@ -537,7 +571,7 @@ function openChore(t) {
 // ----- project (details + checklist + activity) -----
 async function openProject(id) {
   let d;
-  try { d = await api('GET', '/api/tasks/' + id); } catch (x) { toast(x.message); return; }
+  try { d = await api('GET', 'api/tasks/' + id); } catch (x) { toast(x.message); return; }
   const t = d.task;
   const f = { person_ids: [...(t.person_ids || [])], column_id: t.column_id, scope: t.scope };
   const reopen = async () => { await refresh(); openProject(id); };
@@ -557,11 +591,11 @@ async function openProject(id) {
     el('label', { class: 'f' }, 'Deadline (optional)'), el('div', { class: 'row' }, due, el('button', { type: 'button', class: 'icon-btn', onclick: () => { due.value = ''; } }, 'Clear')),
     el('label', { class: 'f' }, 'Description'), notes,
     err,
-    el('div', { class: 'actions' }, confirmBtn('Delete project', async () => { await api('DELETE', '/api/tasks/' + id); closeSheet(); }), saveBtn));
+    el('div', { class: 'actions' }, confirmBtn('Delete project', async () => { await api('DELETE', 'api/tasks/' + id); closeSheet(); }), saveBtn));
   details.addEventListener('submit', async (e) => {
     e.preventDefault(); err.textContent = '';
     try {
-      await keepScroll(() => api('PATCH', '/api/tasks/' + id, { title: title.value, notes: notes.value, person_ids: f.person_ids, scope: f.scope, column_id: f.column_id, due_date: due.value || null }));
+      await keepScroll(() => api('PATCH', 'api/tasks/' + id, { title: title.value, notes: notes.value, person_ids: f.person_ids, scope: f.scope, column_id: f.column_id, due_date: due.value || null }));
       toast('Saved');
     } catch (x) { err.textContent = x.message; }
   });
@@ -569,7 +603,7 @@ async function openProject(id) {
   // Checklist (each change saves immediately)
   const doneCount = d.checklist.filter((i) => i.done_at).length;
   const newStep = el('input', { placeholder: 'Add a step…', maxlength: 200 });
-  const addStep = async () => { if (!newStep.value.trim()) return; await keepScroll(() => api('POST', '/api/tasks/' + id + '/checklist', { text: newStep.value })); $('#newStep') && $('#newStep').focus(); };
+  const addStep = async () => { if (!newStep.value.trim()) return; await keepScroll(() => api('POST', 'api/tasks/' + id + '/checklist', { text: newStep.value })); $('#newStep') && $('#newStep').focus(); };
   newStep.id = 'newStep';
   newStep.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addStep(); } });
   const checklist = el('div', { class: 'section' },
@@ -577,10 +611,10 @@ async function openProject(id) {
     d.checklist.length ? el('div', {}, d.checklist.map((i) => {
       const box = el('input', { type: 'checkbox', 'aria-label': i.text });
       box.checked = !!i.done_at;
-      box.addEventListener('change', () => keepScroll(() => api('PATCH', '/api/checklist/' + i.id, { done: box.checked })));
+      box.addEventListener('change', () => keepScroll(() => api('PATCH', 'api/checklist/' + i.id, { done: box.checked })));
       return el('div', { class: 'ck' + (i.done_at ? ' done' : '') }, box,
         el('div', { class: 't' }, el('span', {}, i.text), i.done_at ? el('div', { class: 'small' }, whoName(i.done_by) + ' · ' + when(i.done_at)) : null),
-        confirmBtn('✕', () => keepScroll(() => api('DELETE', '/api/checklist/' + i.id)), 'icon-btn'));
+        confirmBtn('✕', () => keepScroll(() => api('DELETE', 'api/checklist/' + i.id)), 'icon-btn'));
     })) : el('div', { class: 'hint', style: { marginTop: 0, marginBottom: '8px' } }, 'Break the project into steps. Progress shows on the card.'),
     el('div', { class: 'row', style: { marginTop: '8px' } }, newStep, el('button', { class: 'hbtn', type: 'button', onclick: addStep }, 'Add')));
 
@@ -589,7 +623,7 @@ async function openProject(id) {
   const postNote = el('button', { class: 'hbtn primary', type: 'button', onclick: async () => {
     if (!noteBox.value.trim()) return;
     postNote.disabled = true;
-    try { await keepScroll(() => api('POST', '/api/tasks/' + id + '/notes', { text: noteBox.value })); } catch (x) { toast(x.message); postNote.disabled = false; }
+    try { await keepScroll(() => api('POST', 'api/tasks/' + id + '/notes', { text: noteBox.value })); } catch (x) { toast(x.message); postNote.disabled = false; }
   } }, 'Post update');
   const q = quietDays(S.tasks.find((x) => x.id === id) || t);
   const activity = el('div', { class: 'section' },
@@ -673,15 +707,15 @@ function openRecurring(r) {
     isNew ? null : el('div', { class: 'hint' }, 'Saving restarts the schedule from the “Starting” date. Cards already on the board aren’t changed.'),
     err,
     el('div', { class: 'actions' },
-      isNew ? null : confirmBtn('Delete', async () => { await api('DELETE', '/api/recurrences/' + r.id); await refresh(); openRecurringList(); }),
-      isNew ? null : el('button', { type: 'button', class: 'btn ghost', onclick: async () => { await api('PATCH', '/api/recurrences/' + r.id, { paused: !r.paused }); await refresh(); openRecurringList(); } }, r.paused ? 'Resume' : 'Pause'),
+      isNew ? null : confirmBtn('Delete', async () => { await api('DELETE', 'api/recurrences/' + r.id); await refresh(); openRecurringList(); }),
+      isNew ? null : el('button', { type: 'button', class: 'btn ghost', onclick: async () => { await api('PATCH', 'api/recurrences/' + r.id, { paused: !r.paused }); await refresh(); openRecurringList(); } }, r.paused ? 'Resume' : 'Pause'),
       el('button', { type: 'button', class: 'btn ghost', onclick: openRecurringList }, 'Back'),
       el('button', { type: 'submit', class: 'btn primary' }, 'Save')));
   form.addEventListener('submit', async (e) => {
     e.preventDefault(); err.textContent = '';
     const body = { title: title.value, notes: notes.value, person_ids: f.person_ids, scope: f.scope || 'family', mode: f.mode, freq: f.freq, every: every.value,
       weekdays: f.weekdays, month_day: monthDay.value, interval_days: interval.value, start_date: start.value };
-    try { isNew ? await api('POST', '/api/recurrences', body) : await api('PATCH', '/api/recurrences/' + r.id, body); await refresh(); openRecurringList(); }
+    try { isNew ? await api('POST', 'api/recurrences', body) : await api('PATCH', 'api/recurrences/' + r.id, body); await refresh(); openRecurringList(); }
     catch (x) { err.textContent = x.message; }
   });
   openSheet(form);
@@ -696,31 +730,30 @@ function openSettings() {
     const cols = colsOf(cat), doneId = S.done_column_ids[cat];
     const rows = cols.map((c, i) => {
       const name = el('input', { value: c.name, maxlength: 30 });
-      name.addEventListener('change', () => run(() => api('PATCH', '/api/columns/' + c.id, { name: name.value })));
-      const move = (d) => run(() => { const ids = cols.map((x) => x.id); [ids[i], ids[i + d]] = [ids[i + d], ids[i]]; return api('PUT', '/api/columns/order', { category: cat, ids }); });
+      name.addEventListener('change', () => run(() => api('PATCH', 'api/columns/' + c.id, { name: name.value })));
+      const move = (d) => run(() => { const ids = cols.map((x) => x.id); [ids[i], ids[i + d]] = [ids[i + d], ids[i]]; return api('PUT', 'api/columns/order', { category: cat, ids }); });
       return el('div', { class: 'list-item' },
         el('div', { class: 'grow' }, name, c.id === doneId ? el('div', { class: 'small', style: { marginTop: '4px' } }, 'Last column = Done') : null),
         el('button', { class: 'icon-btn', disabled: i === 0, onclick: () => move(-1), 'aria-label': 'Move earlier' }, '↑'),
         el('button', { class: 'icon-btn', disabled: i === cols.length - 1, onclick: () => move(1), 'aria-label': 'Move later' }, '↓'),
-        c.id === doneId ? null : confirmBtn('✕', () => run(() => api('DELETE', '/api/columns/' + c.id)), 'icon-btn'));
+        c.id === doneId ? null : confirmBtn('✕', () => run(() => api('DELETE', 'api/columns/' + c.id)), 'icon-btn'));
     });
     const newCol = el('input', { placeholder: 'New column name', maxlength: 30 });
     return el('div', { class: 'section' }, el('h4', {}, LABEL[cat] + ' columns'), el('div', { class: 'list' }, rows),
       el('div', { class: 'row', style: { marginTop: '8px' } }, newCol,
-        el('button', { class: 'hbtn', onclick: () => newCol.value.trim() && run(() => api('POST', '/api/columns', { name: newCol.value, category: cat })) }, 'Add')),
+        el('button', { class: 'hbtn', onclick: () => newCol.value.trim() && run(() => api('POST', 'api/columns', { name: newCol.value, category: cat })) }, 'Add')),
       el('div', { class: 'hint' }, 'Cards in the last column count as done and leave the board after ' + (cat === 'chore' ? '7' : '30') + ' days.'));
   };
 
   const people = S.people.map((p) => {
     const name = el('input', { value: p.name, maxlength: 30 });
-    name.addEventListener('change', () => run(() => api('PATCH', '/api/people/' + p.id, { name: name.value })));
+    name.addEventListener('change', () => run(() => api('PATCH', 'api/people/' + p.id, { name: name.value })));
     const color = el('input', { type: 'color', value: p.color });
-    color.addEventListener('change', () => run(() => api('PATCH', '/api/people/' + p.id, { color: color.value })));
+    color.addEventListener('change', () => run(() => api('PATCH', 'api/people/' + p.id, { color: color.value })));
     const isMe = p.id === S.me.person_id;
     return el('div', { class: 'list-item' }, color, el('div', { class: 'grow' }, name,
-        el('div', { class: 'small', style: { marginTop: '4px' } }, isMe ? 'This is you' :
-          el('button', { class: 'icon-btn', style: { padding: 0 }, onclick: () => run(() => api('PATCH', '/api/people/' + p.id, { this_is_me: true })) }, 'This is me'))),
-      confirmBtn('✕', () => run(() => api('DELETE', '/api/people/' + p.id)), 'icon-btn'));
+        isMe ? el('div', { class: 'small', style: { marginTop: '4px' } }, 'Using this phone') : null),
+      confirmBtn('✕', () => run(() => api('DELETE', 'api/people/' + p.id)), 'icon-btn'));
   });
   const newPerson = el('input', { placeholder: 'Add a person', maxlength: 30 });
 
@@ -728,12 +761,13 @@ function openSettings() {
     head('Settings'),
     el('div', { class: 'section', style: { borderTop: 0, marginTop: '8px', paddingTop: 0 } }, el('h4', {}, 'People'), el('div', { class: 'list' }, people),
       el('div', { class: 'row', style: { marginTop: '8px' } }, newPerson,
-        el('button', { class: 'hbtn', onclick: () => newPerson.value.trim() && run(() => api('POST', '/api/people', { name: newPerson.value })) }, 'Add')),
-      S.me.person_id ? null : el('div', { class: 'hint' }, 'Tap “This is me” on your name to turn on the “Mine” filter.')),
+        el('button', { class: 'hbtn', onclick: () => newPerson.value.trim() && run(() => api('POST', 'api/people', { name: newPerson.value })) }, 'Add')),
+    ),
     columnsEditor('chore'),
     columnsEditor('project'),
     err,
-    el('div', { class: 'hint', style: { marginTop: '18px' } }, 'Signed in as ' + S.me.email));
+    el('div', { class: 'hint', style: { marginTop: '18px' } }, 'This phone is set to ' + (S.me.name || 'nobody') + ' · ',
+      el('button', { class: 'icon-btn', style: { padding: 0, textDecoration: 'underline' }, onclick: () => { setWho(''); closeSheetQuiet(); renderWho(); } }, 'Change')));
 }
 
 // ===================== keep in sync =====================

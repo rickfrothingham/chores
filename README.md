@@ -13,7 +13,11 @@ Two sets of filter chips apply to every view and combine with each other:
 
 On cards, owners appear as colored dots with names (up to two; beyond that "Rick +2"), and the card's left edge has one colored stripe per owner. Personal items show a small "Personal" tag. Recurring chores/tasks have the flag too, and the cards they create inherit it.
 
-Runs on Cloudflare Workers with a D1 database. Login is handled by Cloudflare Access.
+Runs on Cloudflare Workers with a D1 database. There's no login. The app only opens at a secret link, `https://chores.<your-subdomain>.workers.dev/k/<APP_KEY>/`, where `APP_KEY` is a long random string kept as a Cloudflare secret. Any other address, including the bare one, shows "Not found".
+
+Anyone who has the link can use the app, so share it only within the family. If it ever gets out, change `APP_KEY` (see below) and the old link stops working.
+
+Each phone asks **"Who's using this phone?"** once and remembers the answer. That drives the "Mine" filter and the names in the history. It's not security: anyone with the link is trusted. On iPhone, a home-screen app keeps its own storage, so it asks once more there. Change it any time at the bottom of Settings.
 
 ## Deadlines and "gone quiet"
 
@@ -32,15 +36,27 @@ Runs on Cloudflare Workers with a D1 database. Login is handled by Cloudflare Ac
 ## One-time setup (all in the browser)
 
 1. **Deploy:** Cloudflare dashboard → Workers & Pages → Create → Import a repository → pick this repo → Deploy.
-2. **Login:** open the `chores` Worker → **Access** tab → Protect this Worker behind Access → Scope: All traffic → Policy: **Family** → Save.
-3. Open `https://chores.<your-subdomain>.workers.dev`, sign in, and enter the household names. Everyone else taps "This is me" in Settings to turn on the "Mine" filter.
+2. **Make a key:** any random string of at least 24 letters and numbers (e.g. `openssl rand -hex 16`, or a password manager's generator set to letters and numbers). Use a different key from the allowance app.
+3. **Save it as a secret:** open the `chores` Worker → Settings → Variables and Secrets → Add. Type: **Secret**, name: `APP_KEY`, value: your key. It must be the Secret type: plain variables get replaced on the next deploy from GitHub, secrets don't.
+4. **Open** `https://chores.<your-subdomain>.workers.dev/k/<your key>/`, enter the household names (first run only), and pick who's using the phone.
+5. **Add to home screen** from that page (iPhone: Share → Add to Home Screen). The icon keeps the secret link.
+
+If the app says "This app is locked," the `APP_KEY` secret isn't set (or is shorter than 24 characters).
+
+### Changing the key
+
+Edit `APP_KEY` in Variables and Secrets. The old link and old home-screen icons stop working right away. Delete the old icons, open the new link, and add it to the home screen again. Nothing in the database changes.
+
+### Moving over from the old Cloudflare Access login
+
+Once the secret link works, open the Worker → **Access** tab and remove the Access protection. History written under the old login still shows the right names (via the email stored on each person from the old "This is me" setting).
 
 ## Files
 
 - `src/index.js`: the server (API, database, migrations, recurring logic)
 - `src/recur.js`: date math for recurring schedules
-- `public/index.html`: the app
-- `public/Sortable.min.js`: drag-and-drop library (SortableJS, MIT license)
+- `src/page.html`: the app (served only at the secret link)
+- `public/`: icons and `Sortable.min.js` (drag-and-drop library, SortableJS, MIT license). Public and harmless.
 
 ## Changing the database later
 

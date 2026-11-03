@@ -3,7 +3,8 @@
 // Data:
 //   columns          board columns. Each belongs to a category ('chore' or 'project').
 //                    Within a category, the LAST column is always "Done".
-//   people           who cards can be assigned to. `email` links a person to a login.
+//   people           who cards can be assigned to. `email` is left over from the old
+//                    email login and only used to show names on old history entries.
 //   task_people      owners of each card (any number). tasks.person_id is kept equal to
 //                    the first owner so an older version of the app would still work.
 //   recurrence_people  owners of each recurring template; copied onto the cards it creates.
@@ -21,13 +22,24 @@
 // Nothing runs on a timer: whenever someone loads the board, the server creates
 // recurring chore cards that have come due and tidies away old Done cards.
 //
-// Login is Cloudflare Access (header `cf-access-authenticated-user-email`).
-// Without that header every request is refused.
+// Access is a secret link instead of a login. The app only answers at
+//   https://chores.<subdomain>.workers.dev/k/<APP_KEY>/
+// where APP_KEY is a long random string stored as a Cloudflare secret.
+// Everything else (including the bare address) gets a blank "Not found".
+// If APP_KEY isn't set, the app refuses everything, so it fails closed.
+//
+// Who is using each phone is picked once on that phone ("Who's using this
+// phone?") and sent as the X-Who-Id header. It drives the "Mine" filter and the
+// names in the history. It is not security: anyone with the link is trusted.
+// History written before this change stored email addresses; people.email
+// still maps those to names for display.
 
 import { Hono } from 'hono';
 import { addDays, describe, isYmd, nextOccurrence, todayIn } from './recur.js';
+import PAGE from './page.html';
 
 const app = new Hono();
+const keyed = new Hono(); // everything under /k/<key>/
 const CATEGORIES = ['chore', 'project'];
 const SCOPES = ['family', 'personal'];
 const scopeOf = (v) => (SCOPES.includes(v) ? v : 'family');
@@ -315,22 +327,79 @@ async function ownerMap(db, kind) {
   return m;
 }
 
-// ---------- Middleware ----------
+// ---------- Secret-link check ----------
 
-app.use('/api/*', async (c, next) => {
-  let email = c.req.header('cf-access-authenticated-user-email');
-  if (!email && c.env.DEV_USER) email = c.env.DEV_USER; // local testing only (.dev.vars)
-  if (!email) {
-    return c.json({ error: 'not_signed_in', message: 'Login is not set up yet. Turn on Cloudflare Access for this app, then reload.' }, 401);
+const MIN_KEY_LENGTH = 24;
+
+// Compare in constant time so the key can't be guessed one character at a time.
+function keyMatches(given, expected) {
+  const enc = new TextEncoder();
+  const a = enc.encode(given || '');
+  const b = enc.encode(expected || '');
+  if (a.byteLength !== b.byteLength) return false;
+  return crypto.subtle.timingSafeEqual(a, b);
+}
+const notFound = (c) => c.text('Not found', 404);
+
+app.use('/k/:key/*', async (c, next) => {
+  const expected = c.env.APP_KEY;
+  if (!expected || expected.length < MIN_KEY_LENGTH) {
+    return c.text('This app is locked: the APP_KEY secret is not set (see the README).', 503);
   }
-  c.set('email', email.toLowerCase());
+  if (!keyMatches(c.req.param('key'), expected)) return notFound(c);
+  await next();
+});
+
+// /k/<key> without the trailing slash: add it, so the page's relative links work.
+app.get('/k/:key', (c) => {
+  if (!c.env.APP_KEY || !keyMatches(c.req.param('key'), c.env.APP_KEY)) return notFound(c);
+  return c.redirect(new URL(c.req.url).pathname + '/', 301);
+});
+
+// ---------- Page and home-screen manifest ----------
+
+// Registered on the main app: a mounted sub-app can't match its own path with a trailing slash.
+app.get('/k/:key/', (c) =>
+  c.html(PAGE, 200, {
+    'cache-control': 'no-store',
+    'referrer-policy': 'no-referrer',       // don't leak the secret URL to other sites
+    'x-robots-tag': 'noindex, nofollow',
+  })
+);
+
+// Served from inside the secret path with a relative start_url, so a
+// home-screen icon opens /k/<key>/ and the key comes along.
+keyed.get('/manifest.webmanifest', (c) =>
+  c.json(
+    {
+      name: 'Household', short_name: 'Household', start_url: './', scope: './', display: 'standalone',
+      background_color: '#f3f1ec', theme_color: '#2b4c7e',
+      icons: [
+        { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+        { src: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png' },
+      ],
+    },
+    200,
+    { 'content-type': 'application/manifest+json', 'cache-control': 'no-store' }
+  )
+);
+
+// ---------- Who is using this phone ----------
+
+keyed.use('/api/*', async (c, next) => {
   await ensureSchema(c.env.DB);
+  const id = parseInt(c.req.header('x-who-id') || '', 10);
+  const who = Number.isFinite(id)
+    ? await c.env.DB.prepare('SELECT id, name FROM people WHERE id = ? AND deleted_at IS NULL').bind(id).first()
+    : null;
+  c.set('who_id', who ? who.id : null);
+  c.set('who', who ? who.name : null);   // stored as "by" in the history
   await next();
 });
 
 // ---------- Board state ----------
 
-app.get('/api/state', async (c) => {
+keyed.get('/api/state', async (c) => {
   const db = c.env.DB;
   const today = todayIn(tz(c));
   await housekeeping(db, today);
@@ -349,12 +418,10 @@ app.get('/api/state', async (c) => {
   ]);
 
   const [taskOwners, recOwners] = await Promise.all([ownerMap(db, 'task'), ownerMap(db, 'recurrence')]);
-  const email = c.get('email');
-  const me = people.results.find((p) => p.email === email);
   return c.json({
     today,
     setup_done: colsOf(cols, 'chore').length > 0,
-    me: { email, person_id: me ? me.id : null },
+    me: { person_id: c.get('who_id'), name: c.get('who') },
     columns: cols,
     done_column_ids: { chore: doneIdOf(cols, 'chore'), project: doneIdOf(cols, 'project') },
     people: people.results,
@@ -370,7 +437,7 @@ app.get('/api/state', async (c) => {
 
 // First run: create default chore columns and the household members.
 // (Project columns are created by migration 2.)
-app.post('/api/setup', async (c) => {
+keyed.post('/api/setup', async (c) => {
   const db = c.env.DB;
   if (colsOf(await allColumns(db), 'chore').length) return c.json({ error: 'Already set up.' }, 409);
   const body = await c.req.json();
@@ -381,8 +448,7 @@ app.post('/api/setup', async (c) => {
     db.prepare("INSERT INTO columns (name, position, category) VALUES (?, ?, 'chore')").bind(n, i)
   );
   names.forEach((n, i) => {
-    const email = i === 0 ? c.get('email') : null; // the first person is whoever is setting up
-    stmts.push(db.prepare('INSERT INTO people (name, color, email, position) VALUES (?, ?, ?, ?)').bind(n, COLORS[i % COLORS.length], email, i));
+    stmts.push(db.prepare('INSERT INTO people (name, color, position) VALUES (?, ?, ?)').bind(n, COLORS[i % COLORS.length], i));
   });
   await db.batch(stmts);
   return c.json({ ok: true });
@@ -390,7 +456,7 @@ app.post('/api/setup', async (c) => {
 
 // ---------- Tasks ----------
 
-app.post('/api/tasks', async (c) => {
+keyed.post('/api/tasks', async (c) => {
   const db = c.env.DB;
   const b = await c.req.json();
   const title = str(b.title, 120);
@@ -408,15 +474,15 @@ app.post('/api/tasks', async (c) => {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(title, str(b.notes, 2000), columnId, owners.length ? owners[0].id : null, await endPosition(db, columnId),
-      b.due_date || null, category, scopeOf(b.scope), c.get('email'), ts, ts, ts, columnId === doneId ? ts : null)
+      b.due_date || null, category, scopeOf(b.scope), c.get('who'), ts, ts, ts, columnId === doneId ? ts : null)
     .run();
   const id = res.meta.last_row_id;
-  await db.batch([...setOwnerStmts(db, 'task', id, owners), ...logStmts(db, id, 'event', 'Created', c.get('email'))]);
+  await db.batch([...setOwnerStmts(db, 'task', id, owners), ...logStmts(db, id, 'event', 'Created', c.get('who'))]);
   return c.json({ ok: true, id });
 });
 
 // Full detail for one card: the card, its checklist and its activity log.
-app.get('/api/tasks/:id', async (c) => {
+keyed.get('/api/tasks/:id', async (c) => {
   const db = c.env.DB;
   const id = parseInt(c.req.param('id'), 10);
   const task = await getTask(db, id);
@@ -428,7 +494,7 @@ app.get('/api/tasks/:id', async (c) => {
   return c.json({ task: { ...task, person_ids: await ownerIds(db, 'task', id) }, checklist: items.results, activity: log.results });
 });
 
-app.patch('/api/tasks/:id', async (c) => {
+keyed.patch('/api/tasks/:id', async (c) => {
   const db = c.env.DB;
   const id = parseInt(c.req.param('id'), 10);
   const task = await getTask(db, id);
@@ -437,7 +503,7 @@ app.patch('/api/tasks/:id', async (c) => {
   const all = await allColumns(db);
   const cols = colsOf(all, task.category);
   const doneId = doneIdOf(all, task.category);
-  const email = c.get('email');
+  const who = c.get('who');
 
   const sets = [], vals = [], events = [];
   const set = (col, v) => { sets.push(col + ' = ?'); vals.push(v); };
@@ -494,14 +560,14 @@ app.patch('/api/tasks/:id', async (c) => {
   vals.push(id);
   const stmts = [db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).bind(...vals)];
   if (newOwners) stmts.push(...setOwnerStmts(db, 'task', id, newOwners));
-  for (const e of events) stmts.push(...logStmts(db, id, 'event', e, email));
+  for (const e of events) stmts.push(...logStmts(db, id, 'event', e, who));
   await db.batch(stmts);
   if (completed) await onCompleted(db, task, todayIn(tz(c)));
   return c.json({ ok: true });
 });
 
 // Removing a recurring card counts as "skip this one" for after-done chores.
-app.delete('/api/tasks/:id', async (c) => {
+keyed.delete('/api/tasks/:id', async (c) => {
   const db = c.env.DB;
   const id = parseInt(c.req.param('id'), 10);
   const task = await getTask(db, id);
@@ -513,7 +579,7 @@ app.delete('/api/tasks/:id', async (c) => {
 
 // ---------- Checklist ----------
 
-app.post('/api/tasks/:id/checklist', async (c) => {
+keyed.post('/api/tasks/:id/checklist', async (c) => {
   const db = c.env.DB;
   const id = parseInt(c.req.param('id'), 10);
   if (!(await getTask(db, id))) return c.json({ error: 'That card no longer exists.' }, 404);
@@ -523,18 +589,18 @@ app.post('/api/tasks/:id/checklist', async (c) => {
   await db.batch([
     db.prepare('INSERT INTO checklist_items (task_id, text, position, created_at) VALUES (?, ?, ?, ?)')
       .bind(id, text, (row && row.p != null ? row.p : 0) + 1, now()),
-    ...logStmts(db, id, 'event', 'Added step: ' + text, c.get('email')),
+    ...logStmts(db, id, 'event', 'Added step: ' + text, c.get('who')),
   ]);
   return c.json({ ok: true });
 });
 
-app.patch('/api/checklist/:id', async (c) => {
+keyed.patch('/api/checklist/:id', async (c) => {
   const db = c.env.DB;
   const id = parseInt(c.req.param('id'), 10);
   const item = await db.prepare('SELECT * FROM checklist_items WHERE id = ? AND deleted_at IS NULL').bind(id).first();
   if (!item) return c.json({ error: 'That step no longer exists.' }, 404);
   const b = await c.req.json();
-  const email = c.get('email');
+  const who = c.get('who');
   const stmts = [];
   if (b.text !== undefined) {
     const t = str(b.text, 200);
@@ -542,34 +608,34 @@ app.patch('/api/checklist/:id', async (c) => {
     stmts.push(db.prepare('UPDATE checklist_items SET text = ? WHERE id = ?').bind(t, id));
   }
   if (b.done !== undefined && !!b.done !== !!item.done_at) {
-    stmts.push(db.prepare('UPDATE checklist_items SET done_at = ?, done_by = ? WHERE id = ?').bind(b.done ? now() : null, b.done ? email : null, id));
-    stmts.push(...logStmts(db, item.task_id, 'event', (b.done ? 'Checked off: ' : 'Unchecked: ') + item.text, email));
+    stmts.push(db.prepare('UPDATE checklist_items SET done_at = ?, done_by = ? WHERE id = ?').bind(b.done ? now() : null, b.done ? who : null, id));
+    stmts.push(...logStmts(db, item.task_id, 'event', (b.done ? 'Checked off: ' : 'Unchecked: ') + item.text, who));
   }
   if (stmts.length) await db.batch(stmts);
   return c.json({ ok: true });
 });
 
-app.delete('/api/checklist/:id', async (c) => {
+keyed.delete('/api/checklist/:id', async (c) => {
   const db = c.env.DB;
   const id = parseInt(c.req.param('id'), 10);
   const item = await db.prepare('SELECT * FROM checklist_items WHERE id = ? AND deleted_at IS NULL').bind(id).first();
   if (!item) return c.json({ ok: true });
   await db.batch([
     db.prepare('UPDATE checklist_items SET deleted_at = ? WHERE id = ?').bind(now(), id),
-    ...logStmts(db, item.task_id, 'event', 'Removed step: ' + item.text, c.get('email')),
+    ...logStmts(db, item.task_id, 'event', 'Removed step: ' + item.text, c.get('who')),
   ]);
   return c.json({ ok: true });
 });
 
 // ---------- Activity notes ----------
 
-app.post('/api/tasks/:id/notes', async (c) => {
+keyed.post('/api/tasks/:id/notes', async (c) => {
   const db = c.env.DB;
   const id = parseInt(c.req.param('id'), 10);
   if (!(await getTask(db, id))) return c.json({ error: 'That card no longer exists.' }, 404);
   const text = str((await c.req.json()).text, 1000);
   if (!text) return bad(c, 'Write something first.');
-  await db.batch(logStmts(db, id, 'note', text, c.get('email')));
+  await db.batch(logStmts(db, id, 'note', text, c.get('who')));
   return c.json({ ok: true });
 });
 
@@ -577,7 +643,7 @@ app.post('/api/tasks/:id/notes', async (c) => {
 
 function categoryOf(v) { return CATEGORIES.includes(v) ? v : 'chore'; }
 
-app.post('/api/columns', async (c) => {
+keyed.post('/api/columns', async (c) => {
   const db = c.env.DB;
   const b = await c.req.json();
   const name = str(b.name, 30);
@@ -593,14 +659,14 @@ app.post('/api/columns', async (c) => {
   return c.json({ ok: true });
 });
 
-app.patch('/api/columns/:id', async (c) => {
+keyed.patch('/api/columns/:id', async (c) => {
   const name = str((await c.req.json()).name, 30);
   if (!name) return bad(c, 'Name the column.');
   await c.env.DB.prepare('UPDATE columns SET name = ? WHERE id = ?').bind(name, parseInt(c.req.param('id'), 10)).run();
   return c.json({ ok: true });
 });
 
-app.put('/api/columns/order', async (c) => {
+keyed.put('/api/columns/order', async (c) => {
   const db = c.env.DB;
   const b = await c.req.json();
   const category = categoryOf(b.category);
@@ -619,7 +685,7 @@ app.put('/api/columns/order', async (c) => {
   return c.json({ ok: true });
 });
 
-app.delete('/api/columns/:id', async (c) => {
+keyed.delete('/api/columns/:id', async (c) => {
   const db = c.env.DB;
   const id = parseInt(c.req.param('id'), 10);
   const all = await allColumns(db);
@@ -636,7 +702,7 @@ app.delete('/api/columns/:id', async (c) => {
 
 // ---------- People ----------
 
-app.post('/api/people', async (c) => {
+keyed.post('/api/people', async (c) => {
   const db = c.env.DB;
   const name = str((await c.req.json()).name, 30);
   if (!name) return bad(c, 'Enter a name.');
@@ -645,7 +711,7 @@ app.post('/api/people', async (c) => {
   return c.json({ ok: true });
 });
 
-app.patch('/api/people/:id', async (c) => {
+keyed.patch('/api/people/:id', async (c) => {
   const db = c.env.DB;
   const id = parseInt(c.req.param('id'), 10);
   const b = await c.req.json();
@@ -657,18 +723,10 @@ app.patch('/api/people/:id', async (c) => {
   if (b.color !== undefined && /^#[0-9a-f]{6}$/i.test(b.color)) {
     await db.prepare('UPDATE people SET color = ? WHERE id = ?').bind(b.color, id).run();
   }
-  if (b.this_is_me) {
-    // Link the signed-in login to this person (and unlink it from anyone else).
-    const email = c.get('email');
-    await db.batch([
-      db.prepare('UPDATE people SET email = NULL WHERE email = ?').bind(email),
-      db.prepare('UPDATE people SET email = ? WHERE id = ?').bind(email, id),
-    ]);
-  }
   return c.json({ ok: true });
 });
 
-app.delete('/api/people/:id', async (c) => {
+keyed.delete('/api/people/:id', async (c) => {
   const db = c.env.DB;
   const id = parseInt(c.req.param('id'), 10);
   await db.batch([
@@ -715,7 +773,7 @@ function parseRecurrence(b, today) {
   return r;
 }
 
-app.post('/api/recurrences', async (c) => {
+keyed.post('/api/recurrences', async (c) => {
   const db = c.env.DB;
   const b = await c.req.json();
   const r = parseRecurrence(b, todayIn(tz(c)));
@@ -727,13 +785,13 @@ app.post('/api/recurrences', async (c) => {
       `INSERT INTO recurrences (title, notes, person_id, scope, mode, freq, every, weekdays, month_day, anchor, interval_days, next_date, created_by, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .bind(r.title, r.notes, r.person_id, r.scope, r.mode, r.freq, r.every, r.weekdays, r.month_day, r.anchor, r.interval_days, r.first_date, c.get('email'), now())
+    .bind(r.title, r.notes, r.person_id, r.scope, r.mode, r.freq, r.every, r.weekdays, r.month_day, r.anchor, r.interval_days, r.first_date, c.get('who'), now())
     .run();
   await db.batch(setOwnerStmts(db, 'recurrence', res.meta.last_row_id, owners));
   return c.json({ ok: true });
 });
 
-app.patch('/api/recurrences/:id', async (c) => {
+keyed.patch('/api/recurrences/:id', async (c) => {
   const db = c.env.DB;
   const id = parseInt(c.req.param('id'), 10);
   const b = await c.req.json();
@@ -762,12 +820,15 @@ app.patch('/api/recurrences/:id', async (c) => {
   return c.json({ ok: true });
 });
 
-app.delete('/api/recurrences/:id', async (c) => {
+keyed.delete('/api/recurrences/:id', async (c) => {
   await c.env.DB.prepare('UPDATE recurrences SET deleted_at = ? WHERE id = ?').bind(now(), parseInt(c.req.param('id'), 10)).run();
   return c.json({ ok: true });
 });
 
-app.notFound((c) => c.json({ error: 'Not found' }, 404));
+app.route('/k/:key', keyed);
+
+// Anything else, including the bare address: nothing to see here.
+app.notFound(notFound);
 app.onError((err, c) => {
   console.error(err);
   return c.json({ error: 'Something went wrong on the server.' }, 500);
