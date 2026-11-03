@@ -1,0 +1,16 @@
+{
+  "name": "chores",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "sortablejs": "^1.15.0",
+    "wrangler": "^4.45.0"
+  }
+}

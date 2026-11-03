@@ -1,0 +1,21 @@
+{
+  // Cloudflare reads this file on every deploy.
+  "name": "chores",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+
+  // The web page lives in /public.
+  "assets": { "directory": "./public" },
+
+  // The database. No ID needed: Cloudflare creates it on the first deploy.
+  "d1_databases": [{ "binding": "DB", "database_name": "chores" }],
+
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+
+  "vars": {
+    // Decides when a day starts, for due dates and recurring tasks.
+    "TIMEZONE": "America/New_York"
+  }
+}

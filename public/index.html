@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chores</title>
+<meta name="theme-color" content="#2b4c7e">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" href="/icon-512.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Chores">
+<style>
+  :root {
+    --bg: #f3f1ec; --col: #e9e6df; --card: #fff; --ink: #1e2328; --muted: #6b7077;
+    --line: #dedad2; --brand: #2b4c7e; --brand-ink: #fff; --warn: #b5442b; --soon: #a86b00; --ok: #2f7d4f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #121417; --col: #1b1e22; --card: #252a30; --ink: #eceef0; --muted: #9aa0a7;
+      --line: #30353b; --brand: #6f9ad6; --brand-ink: #0e1420; --warn: #ef8a71; --soon: #e0b050; --ok: #6cc28f; }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 16px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  button { font: inherit; color: inherit; cursor: pointer; border: 0; background: none; border-radius: 10px; }
+  input, select, textarea { font: inherit; color: var(--ink); background: var(--bg); border: 1.5px solid var(--line);
+    border-radius: 10px; padding: 10px 12px; width: 100%; }
+  textarea { min-height: 70px; resize: vertical; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand); border-color: transparent; }
+
+  header { padding: max(12px, env(safe-area-inset-top)) 14px 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  header h1 { font-size: 22px; margin: 0 auto 0 2px; }
+  .hbtn { padding: 8px 12px; background: var(--card); border: 1px solid var(--line); font-size: 15px; }
+  .hbtn.primary { background: var(--brand); color: var(--brand-ink); border-color: transparent; font-weight: 600; }
+  .filters { display: flex; gap: 6px; padding: 0 14px 10px; overflow-x: auto; scrollbar-width: none; }
+  .filters::-webkit-scrollbar { display: none; }
+  .chip { padding: 6px 12px; border-radius: 999px; background: var(--card); border: 1px solid var(--line);
+    font-size: 14px; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+  .chip.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
+
+  .board { flex: 1; display: flex; gap: 12px; padding: 0 14px max(14px, env(safe-area-inset-bottom));
+    overflow-x: auto; scroll-snap-type: x mandatory; align-items: flex-start; }
+  .column { background: var(--col); border-radius: 16px; padding: 10px; flex: 0 0 86%; max-width: 360px;
+    scroll-snap-align: center; display: flex; flex-direction: column; max-height: 100%; }
+  @media (min-width: 760px) { .column { flex: 1 1 0; max-width: none; } .board { scroll-snap-type: none; } }
+  .col-head { display: flex; align-items: center; gap: 8px; padding: 2px 4px 8px; min-height: 38px; }
+  .col-head h2 { font-size: 15px; margin: 0; flex: 1; }
+  .count { color: var(--muted); font-size: 13px; font-weight: 500; }
+  .col-add { font-size: 20px; line-height: 1; padding: 2px 8px; color: var(--muted); }
+  .cards { min-height: 60px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; padding-bottom: 4px; }
+  .empty-col { color: var(--muted); font-size: 14px; text-align: center; padding: 14px 0; pointer-events: none; }
+
+  .card { background: var(--card); border-radius: 12px; padding: 10px 10px 10px 12px; display: flex; gap: 8px;
+    align-items: flex-start; box-shadow: 0 1px 2px rgba(0,0,0,.06); border-left: 4px solid transparent; user-select: none; }
+  .card-body { flex: 1; min-width: 0; }
+  .card-title { font-weight: 550; word-wrap: break-word; }
+  .card-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 13px; color: var(--muted); margin-top: 4px; align-items: center; }
+  .card-meta span { display: inline-flex; align-items: center; gap: 4px; }
+  .due-over { color: var(--warn); font-weight: 600; } .due-today { color: var(--soon); font-weight: 600; }
+  .check { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--line); flex: none; display: grid; place-items: center;
+    color: transparent; font-size: 16px; }
+  .check:hover { border-color: var(--ok); color: var(--ok); }
+  .card.done { opacity: .6; } .card.done .card-title { text-decoration: line-through; }
+  .card.done .check { background: var(--ok); border-color: var(--ok); color: #fff; }
+  .sortable-ghost { opacity: .3; } .sortable-chosen { box-shadow: 0 6px 18px rgba(0,0,0,.18); }
+
+  /* sheets */
+  .sheet-bg { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: none; align-items: flex-end; justify-content: center; z-index: 20; }
+  .sheet-bg.open { display: flex; }
+  @media (min-width: 760px) { .sheet-bg { align-items: center; } .sheet { border-radius: 20px !important; } }
+  .sheet { width: 100%; max-width: 520px; max-height: 92vh; overflow-y: auto; background: var(--card);
+    border-radius: 20px 20px 0 0; padding: 18px 18px max(18px, env(safe-area-inset-bottom)); }
+  .sheet h3 { margin: 0 0 6px; font-size: 20px; }
+  label.f { display: block; font-size: 14px; color: var(--muted); margin: 14px 0 6px; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .seg { display: flex; flex-wrap: wrap; gap: 6px; }
+  .seg button { padding: 8px 12px; border: 1px solid var(--line); background: var(--bg); font-size: 15px; display: inline-flex; gap: 6px; align-items: center; }
+  .seg button.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .actions { display: flex; gap: 8px; margin-top: 20px; }
+  .btn { padding: 12px 16px; font-weight: 600; }
+  .btn.primary { background: var(--brand); color: var(--brand-ink); flex: 1; }
+  .btn.ghost { color: var(--muted); }
+  .btn.danger { color: var(--warn); }
+  .btn.danger.armed { background: var(--warn); color: #fff; }
+  .err { color: var(--warn); font-size: 14px; margin-top: 10px; min-height: 1em; }
+  .hint { font-size: 13px; color: var(--muted); margin-top: 6px; }
+  .list { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .list-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--line); }
+  .list-item:first-child { border-top: 0; }
+  .list-item .grow { flex: 1; min-width: 0; }
+  .small { font-size: 13px; color: var(--muted); }
+  .icon-btn { padding: 6px 8px; color: var(--muted); font-size: 15px; }
+  .section { margin-top: 22px; }
+  .section h4 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .center { text-align: center; } .loading { margin: 80px auto; color: var(--muted); }
+  input[type=color] { width: 36px; height: 32px; padding: 2px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<div id="root" class="loading center">Loading…</div>
+<div class="sheet-bg" id="sheetBg"><div class="sheet" id="sheet"></div></div>
+
+<script src="/Sortable.min.js"></script>
+<script>
+// ===================== helpers =====================
+const $ = (s, r = document) => r.querySelector(s);
+const root = $('#root');
+let S = null;                 // board state from the server
+let filter = localStorageGet('filter') || 'all';
+let dragging = false;
+
+function localStorageGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function localStorageSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
+
+function el(tag, attrs = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === 'class') e.className = v;
+    else if (k === 'style' && typeof v === 'object') Object.assign(e.style, v);
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else if (k === 'value') e.value = v;
+    else e.setAttribute(k, v === true ? '' : v);
+  }
+  for (const k of kids.flat()) if (k != null && k !== false) e.append(k.nodeType ? k : String(k));
+  return e;
+}
+async function api(method, path, body) {
+  const res = await fetch(path, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  let data = {}; try { data = await res.json(); } catch {}
+  if (!res.ok) throw new Error(data.message || data.error || 'Error ' + res.status);
+  return data;
+}
+const person = (id) => S.people.find((p) => p.id === id);
+const dayMs = 86400000;
+function daysFromToday(ymd) { return Math.round((Date.parse(ymd) - Date.parse(S.today)) / dayMs); }
+function dueLabel(ymd) {
+  const n = daysFromToday(ymd);
+  if (n < 0) return ['Overdue · ' + shortDate(ymd), 'due-over'];
+  if (n === 0) return ['Today', 'due-today'];
+  if (n === 1) return ['Tomorrow', ''];
+  if (n < 7) return [new Date(ymd + 'T12:00').toLocaleDateString('en-US', { weekday: 'long' }), ''];
+  return [shortDate(ymd), ''];
+}
+function shortDate(ymd) { return new Date(ymd + 'T12:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); }
+
+// two-tap confirm for destructive buttons
+function confirmBtn(label, onConfirm, cls = 'btn danger') {
+  const b = el('button', { class: cls, type: 'button' }, label);
+  let armed = false, t;
+  b.addEventListener('click', async () => {
+    if (!armed) { armed = true; b.textContent = 'Tap again to confirm'; b.classList.add('armed');
+      t = setTimeout(() => { armed = false; b.textContent = label; b.classList.remove('armed'); }, 3000); return; }
+    clearTimeout(t); b.disabled = true; await onConfirm();
+  });
+  return b;
+}
+
+// ===================== load =====================
+async function load() {
+  try {
+    S = await api('GET', '/api/state');
+    S.setup_done ? renderBoard() : renderSetup();
+  } catch (e) {
+    root.className = 'center'; root.style.display = ''; root.replaceChildren(el('div', { class: 'loading' }, e.message, el('br'), el('br'),
+      el('button', { class: 'hbtn primary', onclick: load }, 'Try again')));
+  }
+}
+
+// ===================== setup =====================
+function renderSetup() {
+  root.className = ''; root.style.display = '';
+  const err = el('div', { class: 'err' });
+  const inputs = [el('input', { placeholder: 'Your name', maxlength: 30 }), el('input', { placeholder: 'e.g. your partner', maxlength: 30 }),
+    el('input', { value: 'Charlotte', maxlength: 30 }), el('input', { placeholder: '(optional)', maxlength: 30 })];
+  const form = el('form', { class: 'sheet', style: { margin: '24px auto', borderRadius: '20px' } },
+    el('h3', {}, 'Set up the chore board'),
+    el('div', { class: 'hint' }, 'Who can chores be assigned to? You can change this later in Settings.'),
+    el('label', { class: 'f' }, 'You'), inputs[0],
+    el('label', { class: 'f' }, 'Everyone else'), inputs[1], el('div', { style: { height: '8px' } }), inputs[2],
+    el('div', { style: { height: '8px' } }), inputs[3],
+    err, el('div', { class: 'actions' }, el('button', { class: 'btn primary', type: 'submit' }, 'Create board')));
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!inputs[0].value.trim()) { err.textContent = 'Enter your name.'; return; }
+    try { await api('POST', '/api/setup', { people: inputs.map((i) => ({ name: i.value })) }); load(); }
+    catch (x) { err.textContent = x.message; }
+  });
+  root.replaceChildren(form);
+}
+
+// ===================== board =====================
+function visible(t) {
+  if (filter === 'all') return true;
+  if (filter === 'mine') return S.me.person_id != null && t.person_id === S.me.person_id;
+  if (filter === 'none') return t.person_id == null;
+  return String(t.person_id) === filter;
+}
+
+function renderBoard() {
+  root.className = ''; root.style.display = 'contents';
+  if (filter !== 'all' && filter !== 'mine' && filter !== 'none' && !person(+filter)) filter = 'all';
+
+  const header = el('header', {},
+    el('h1', {}, 'Chores'),
+    el('button', { class: 'hbtn', onclick: openRecurringList, title: 'Recurring tasks' }, '↻ Recurring'),
+    el('button', { class: 'hbtn', onclick: openSettings, 'aria-label': 'Settings' }, '⚙︎'),
+    el('button', { class: 'hbtn primary', onclick: () => openTask(null, S.columns[0].id) }, '+ Task'));
+
+  const chip = (key, label, color) => el('button', { class: 'chip' + (filter === key ? ' on' : ''),
+    onclick: () => { filter = key; localStorageSet('filter', key); renderBoard(); } },
+    color ? el('span', { class: 'dot', style: { background: color } }) : null, label);
+  const filters = el('div', { class: 'filters' }, chip('all', 'Everyone'),
+    S.me.person_id ? chip('mine', 'Mine') : null,
+    S.people.map((p) => chip(String(p.id), p.name, p.color)), chip('none', 'Unassigned'));
+
+  const board = el('div', { class: 'board' });
+  for (const col of S.columns) {
+    const isDone = col.id === S.done_column_id;
+    const tasks = S.tasks.filter((t) => t.column_id === col.id && visible(t));
+    if (isDone) tasks.sort((a, b) => (b.done_at || '').localeCompare(a.done_at || ''));
+    const list = el('div', { class: 'cards', 'data-col': col.id },
+      tasks.length ? tasks.map((t) => cardEl(t, isDone)) : el('div', { class: 'empty-col' }, isDone ? 'Nothing done this week yet' : 'Nothing here'));
+    board.append(el('section', { class: 'column' },
+      el('div', { class: 'col-head' }, el('h2', {}, col.name, ' ', el('span', { class: 'count' }, tasks.length || '')),
+        isDone ? null : el('button', { class: 'col-add', 'aria-label': 'Add to ' + col.name, onclick: () => openTask(null, col.id) }, '+')),
+      list));
+    Sortable.create(list, {
+      group: 'cards', animation: 150, delay: 180, delayOnTouchOnly: true, filter: '.check, .empty-col',
+      preventOnFilter: false, sort: !isDone,
+      onStart: () => { dragging = true; },
+      onEnd: onDrop,
+    });
+  }
+  root.replaceChildren(header, filters, board);
+}
+
+function cardEl(t, isDone) {
+  const p = person(t.person_id);
+  const meta = [];
+  if (p) meta.push(el('span', {}, el('span', { class: 'dot', style: { background: p.color } }), p.name));
+  if (t.due_date && !isDone) { const [txt, cls] = dueLabel(t.due_date); meta.push(el('span', { class: cls }, txt)); }
+  if (t.recurrence_id) meta.push(el('span', { title: 'Recurring' }, '↻'));
+  if (t.notes) meta.push(el('span', { title: 'Has notes' }, '✎'));
+  const check = el('button', { class: 'check', 'aria-label': isDone ? 'Mark not done' : 'Mark done' }, '✓');
+  check.addEventListener('click', async (e) => {
+    e.stopPropagation(); check.disabled = true;
+    const target = isDone ? S.columns[0].id : S.done_column_id;
+    try { await api('PATCH', '/api/tasks/' + t.id, { column_id: target }); } catch (x) { toast(x.message); }
+    load();
+  });
+  return el('div', { class: 'card' + (isDone ? ' done' : ''), 'data-id': t.id, style: { borderLeftColor: p ? p.color : 'transparent' },
+    onclick: () => { if (!dragging) openTask(t); } },
+    el('div', { class: 'card-body' }, el('div', { class: 'card-title' }, t.title), meta.length ? el('div', { class: 'card-meta' }, meta) : null),
+    check);
+}
+
+async function onDrop(evt) {
+  setTimeout(() => { dragging = false; }, 50);
+  const card = evt.item, id = +card.dataset.id, colId = +evt.to.dataset.col;
+  const t = S.tasks.find((x) => x.id === id);
+  if (!t) return;
+  const posOf = (node) => { const x = node && node.dataset && S.tasks.find((y) => y.id === +node.dataset.id); return x ? x.position : null; };
+  const prev = posOf(card.previousElementSibling), next = posOf(card.nextElementSibling);
+  let position = prev != null && next != null ? (prev + next) / 2 : prev != null ? prev + 1 : next != null ? next - 1 : 1;
+  if (colId === t.column_id && evt.oldIndex === evt.newIndex) return;
+  try { await api('PATCH', '/api/tasks/' + id, { column_id: colId, position }); } catch (x) { toast(x.message); }
+  load();
+}
+
+function toast(msg) {
+  const d = el('div', { style: { position: 'fixed', left: '50%', bottom: '24px', transform: 'translateX(-50%)', background: 'var(--ink)',
+    color: 'var(--bg)', padding: '10px 16px', borderRadius: '12px', zIndex: 40, fontSize: '14px' } }, msg);
+  document.body.append(d); setTimeout(() => d.remove(), 3500);
+}
+
+// ===================== sheet plumbing =====================
+const sheetBg = $('#sheetBg'), sheet = $('#sheet');
+function openSheet(...content) { sheet.replaceChildren(...content); sheetBg.classList.add('open'); }
+function closeSheet() { sheetBg.classList.remove('open'); }
+sheetBg.addEventListener('click', (e) => { if (e.target === sheetBg) closeSheet(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheet(); });
+
+function personPicker(selected, onPick) {
+  const wrap = el('div', { class: 'seg' });
+  const draw = () => wrap.replaceChildren(
+    ...S.people.map((p) => el('button', { type: 'button', class: selected === p.id ? 'on' : '', onclick: () => { selected = p.id; onPick(p.id); draw(); } },
+      el('span', { class: 'dot', style: { background: p.color } }), p.name)),
+    el('button', { type: 'button', class: selected == null ? 'on' : '', onclick: () => { selected = null; onPick(null); draw(); } }, 'Nobody'));
+  draw(); return wrap;
+}
+
+// ===================== task sheet =====================
+function openTask(t, columnId) {
+  const isNew = !t;
+  const f = { title: t ? t.title : '', notes: t ? t.notes : '', person_id: t ? t.person_id : (filter !== 'all' && filter !== 'none' ? (filter === 'mine' ? S.me.person_id : +filter) : null),
+    column_id: t ? t.column_id : columnId, due_date: t ? t.due_date : '' };
+  const err = el('div', { class: 'err' });
+  const title = el('input', { value: f.title, maxlength: 120, placeholder: 'e.g. Take out recycling', required: true });
+  const due = el('input', { type: 'date', value: f.due_date || '' });
+  const notes = el('textarea', { maxlength: 1000, placeholder: 'Details (optional)' }); notes.value = f.notes;
+  const colSeg = el('div', { class: 'seg' });
+  const drawCols = () => colSeg.replaceChildren(...S.columns.map((c) => el('button', { type: 'button', class: f.column_id === c.id ? 'on' : '',
+    onclick: () => { f.column_id = c.id; drawCols(); } }, c.name)));
+  drawCols();
+  const rec = t && t.recurrence_id ? S.recurrences.find((r) => r.id === t.recurrence_id) : null;
+
+  const form = el('form', {},
+    el('h3', {}, isNew ? 'New task' : 'Edit task'),
+    rec ? el('div', { class: 'hint' }, '↻ From recurring task: ' + rec.description + '. Changes here affect only this card.') : null,
+    el('label', { class: 'f' }, 'Task'), title,
+    el('label', { class: 'f' }, 'Who'), personPicker(f.person_id, (id) => { f.person_id = id; }),
+    el('label', { class: 'f' }, 'Column'), colSeg,
+    el('label', { class: 'f' }, 'Due date (optional)'), el('div', { class: 'row' }, due, el('button', { type: 'button', class: 'icon-btn', onclick: () => { due.value = ''; } }, 'Clear')),
+    el('label', { class: 'f' }, 'Notes'), notes,
+    err,
+    el('div', { class: 'actions' },
+      isNew ? null : confirmBtn('Delete', async () => { await api('DELETE', '/api/tasks/' + t.id); closeSheet(); load(); }),
+      el('button', { type: 'button', class: 'btn ghost', onclick: closeSheet }, 'Cancel'),
+      el('button', { type: 'submit', class: 'btn primary' }, isNew ? 'Add' : 'Save')));
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault(); err.textContent = '';
+    const body = { title: title.value, notes: notes.value, person_id: f.person_id, column_id: f.column_id, due_date: due.value || null };
+    try { isNew ? await api('POST', '/api/tasks', body) : await api('PATCH', '/api/tasks/' + t.id, body); closeSheet(); load(); }
+    catch (x) { err.textContent = x.message; }
+  });
+  openSheet(form);
+  if (isNew) setTimeout(() => title.focus(), 60);
+}
+
+// ===================== recurring =====================
+function openRecurringList() {
+  const items = S.recurrences.map((r) => {
+    const p = person(r.person_id);
+    const when = r.paused ? 'Paused' : r.next_date ? 'Next card: ' + shortDate(r.next_date) : 'Next card after the current one is done';
+    return el('div', { class: 'list-item', style: { cursor: 'pointer' }, onclick: () => openRecurring(r) },
+      el('div', { class: 'grow' }, el('div', {}, r.title),
+        el('div', { class: 'small' }, r.description + (p ? ' · ' + p.name : ''), el('br'), when)),
+      el('span', { class: 'small' }, '›'));
+  });
+  openSheet(el('h3', {}, 'Recurring tasks'),
+    el('div', { class: 'hint' }, 'Each one adds a card to “' + S.columns[0].name + '” when it comes due. If the last card is still open, no duplicate is added.'),
+    el('div', { style: { height: '12px' } }),
+    items.length ? el('div', { class: 'list' }, items) : el('div', { class: 'hint center' }, 'None yet.'),
+    el('div', { class: 'actions' }, el('button', { class: 'btn ghost', onclick: closeSheet }, 'Close'),
+      el('button', { class: 'btn primary', onclick: () => openRecurring(null) }, '+ New recurring task')));
+}
+
+function openRecurring(r) {
+  const isNew = !r;
+  const f = r ? { ...r, weekdays: [...r.weekdays] } : { title: '', notes: '', person_id: null, mode: 'schedule', freq: 'weekly', every: 1,
+    weekdays: [new Date(S.today + 'T12:00').getDay()], month_day: +S.today.slice(8, 10), interval_days: 30 };
+  const startDefault = r ? (r.mode === 'schedule' ? r.anchor : (r.next_date || S.today)) : S.today;
+  const err = el('div', { class: 'err' });
+  const title = el('input', { value: f.title, maxlength: 120, placeholder: 'e.g. Water the plants' });
+  const notes = el('textarea', { maxlength: 1000, placeholder: 'Details (optional)' }); notes.value = f.notes || '';
+  const start = el('input', { type: 'date', value: startDefault });
+  const every = el('input', { type: 'number', min: 1, max: 52, value: f.every || 1, style: { width: '80px' }, inputmode: 'numeric' });
+  const interval = el('input', { type: 'number', min: 1, max: 3650, value: f.interval_days || 30, style: { width: '100px' }, inputmode: 'numeric' });
+  const monthDay = el('select', { style: { width: '100px' } }, Array.from({ length: 31 }, (_, i) => el('option', { value: i + 1 }, String(i + 1))));
+  monthDay.value = f.month_day || 1;
+
+  const modeSeg = el('div', { class: 'seg' }), freqSeg = el('div', { class: 'seg' }), wdSeg = el('div', { class: 'seg' }), detail = el('div');
+  const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const unit = { daily: 'day(s)', weekly: 'week(s)', monthly: 'month(s)' };
+  function draw() {
+    modeSeg.replaceChildren(
+      el('button', { type: 'button', class: f.mode === 'schedule' ? 'on' : '', onclick: () => { f.mode = 'schedule'; draw(); } }, 'On a schedule'),
+      el('button', { type: 'button', class: f.mode === 'after_done' ? 'on' : '', onclick: () => { f.mode = 'after_done'; draw(); } }, 'Some days after it’s done'));
+    if (f.mode === 'after_done') {
+      detail.replaceChildren(
+        el('label', { class: 'f' }, 'Reappears'), el('div', { class: 'row' }, interval, el('span', {}, 'days after it’s marked done')),
+        el('label', { class: 'f' }, 'First card appears on'), start,
+        el('div', { class: 'hint' }, 'Good for things like “change the furnace filter”: the clock restarts whenever it’s actually done.'));
+      return;
+    }
+    freqSeg.replaceChildren(...['daily', 'weekly', 'monthly'].map((k) => el('button', { type: 'button', class: f.freq === k ? 'on' : '',
+      onclick: () => { f.freq = k; draw(); } }, k[0].toUpperCase() + k.slice(1))));
+    wdSeg.replaceChildren(...WD.map((d, i) => el('button', { type: 'button', class: f.weekdays.includes(i) ? 'on' : '',
+      onclick: () => { f.weekdays = f.weekdays.includes(i) ? f.weekdays.filter((x) => x !== i) : [...f.weekdays, i]; draw(); } }, d)));
+    detail.replaceChildren(...[
+      el('label', { class: 'f' }, 'How often'), freqSeg,
+      el('label', { class: 'f' }, 'Every'), el('div', { class: 'row' }, every, el('span', {}, unit[f.freq])),
+      f.freq === 'weekly' ? [el('label', { class: 'f' }, 'On'), wdSeg] : null,
+      f.freq === 'monthly' ? [el('label', { class: 'f' }, 'On day'), monthDay,
+        el('div', { class: 'hint' }, 'Days 29–31 fall on the last day in shorter months.')] : null,
+      el('label', { class: 'f' }, 'Starting'), start].flat().filter(Boolean));
+  }
+  draw();
+
+  const form = el('form', {},
+    el('h3', {}, isNew ? 'New recurring task' : 'Edit recurring task'),
+    el('label', { class: 'f' }, 'Task'), title,
+    el('label', { class: 'f' }, 'Who'), personPicker(f.person_id, (id) => { f.person_id = id; }),
+    el('label', { class: 'f' }, 'Repeats'), modeSeg, detail,
+    el('label', { class: 'f' }, 'Notes'), notes,
+    isNew ? null : el('div', { class: 'hint' }, 'Saving restarts the schedule from the “Starting” date. Cards already on the board aren’t changed.'),
+    err,
+    el('div', { class: 'actions' },
+      isNew ? null : confirmBtn('Delete', async () => { await api('DELETE', '/api/recurrences/' + r.id); await load(); openRecurringList(); }),
+      isNew ? null : el('button', { type: 'button', class: 'btn ghost', onclick: async () => { await api('PATCH', '/api/recurrences/' + r.id, { paused: !r.paused }); await load(); openRecurringList(); } }, r.paused ? 'Resume' : 'Pause'),
+      el('button', { type: 'button', class: 'btn ghost', onclick: openRecurringList }, 'Back'),
+      el('button', { type: 'submit', class: 'btn primary' }, 'Save')));
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault(); err.textContent = '';
+    const body = { title: title.value, notes: notes.value, person_id: f.person_id, mode: f.mode, freq: f.freq, every: every.value,
+      weekdays: f.weekdays, month_day: monthDay.value, interval_days: interval.value, start_date: start.value };
+    try { isNew ? await api('POST', '/api/recurrences', body) : await api('PATCH', '/api/recurrences/' + r.id, body); await load(); openRecurringList(); }
+    catch (x) { err.textContent = x.message; }
+  });
+  openSheet(form);
+}
+
+// ===================== settings =====================
+function openSettings() {
+  const err = el('div', { class: 'err' });
+  const run = async (fn) => { err.textContent = ''; try { await fn(); await load(); openSettings(); } catch (x) { err.textContent = x.message; } };
+
+  const cols = S.columns.map((c, i) => {
+    const name = el('input', { value: c.name, maxlength: 30 });
+    name.addEventListener('change', () => run(() => api('PATCH', '/api/columns/' + c.id, { name: name.value })));
+    const move = (d) => run(() => { const ids = S.columns.map((x) => x.id); [ids[i], ids[i + d]] = [ids[i + d], ids[i]]; return api('PUT', '/api/columns/order', { ids }); });
+    const isDone = c.id === S.done_column_id;
+    return el('div', { class: 'list-item' }, el('div', { class: 'grow' }, name, isDone ? el('div', { class: 'small', style: { marginTop: '4px' } }, 'Last column = Done') : null),
+      el('button', { class: 'icon-btn', disabled: i === 0, onclick: () => move(-1), 'aria-label': 'Move left' }, '↑'),
+      el('button', { class: 'icon-btn', disabled: i === S.columns.length - 1, onclick: () => move(1), 'aria-label': 'Move right' }, '↓'),
+      isDone ? null : confirmBtn('✕', () => run(() => api('DELETE', '/api/columns/' + c.id)), 'icon-btn'));
+  });
+  const newCol = el('input', { placeholder: 'New column name', maxlength: 30 });
+
+  const people = S.people.map((p) => {
+    const name = el('input', { value: p.name, maxlength: 30 });
+    name.addEventListener('change', () => run(() => api('PATCH', '/api/people/' + p.id, { name: name.value })));
+    const color = el('input', { type: 'color', value: p.color });
+    color.addEventListener('change', () => run(() => api('PATCH', '/api/people/' + p.id, { color: color.value })));
+    const isMe = p.id === S.me.person_id;
+    return el('div', { class: 'list-item' }, color, el('div', { class: 'grow' }, name,
+        el('div', { class: 'small', style: { marginTop: '4px' } }, isMe ? 'This is you' :
+          el('button', { class: 'icon-btn', style: { padding: 0 }, onclick: () => run(() => api('PATCH', '/api/people/' + p.id, { this_is_me: true })) }, 'This is me'))),
+      confirmBtn('✕', () => run(() => api('DELETE', '/api/people/' + p.id)), 'icon-btn'));
+  });
+  const newPerson = el('input', { placeholder: 'Add a person', maxlength: 30 });
+
+  openSheet(
+    el('h3', {}, 'Settings'),
+    el('div', { class: 'section' }, el('h4', {}, 'Columns (left to right)'), el('div', { class: 'list' }, cols),
+      el('div', { class: 'row', style: { marginTop: '8px' } }, newCol,
+        el('button', { class: 'hbtn', onclick: () => newCol.value.trim() && run(() => api('POST', '/api/columns', { name: newCol.value })) }, 'Add')),
+      el('div', { class: 'hint' }, 'Cards in the last column count as done and leave the board after 7 days.')),
+    el('div', { class: 'section' }, el('h4', {}, 'People'), el('div', { class: 'list' }, people),
+      el('div', { class: 'row', style: { marginTop: '8px' } }, newPerson,
+        el('button', { class: 'hbtn', onclick: () => newPerson.value.trim() && run(() => api('POST', '/api/people', { name: newPerson.value })) }, 'Add')),
+      S.me.person_id ? null : el('div', { class: 'hint' }, 'Tap “This is me” on your name to turn on the “Mine” filter.')),
+    err,
+    el('div', { class: 'hint', style: { marginTop: '18px' } }, 'Signed in as ' + S.me.email),
+    el('div', { class: 'actions' }, el('button', { class: 'btn primary', onclick: closeSheet }, 'Done')));
+}
+
+// ===================== keep in sync =====================
+// Reload when the app returns to the foreground, and every 30s while visible,
+// so changes from the other phone show up. Skipped while a sheet is open or dragging.
+const idle = () => !document.hidden && !sheetBg.classList.contains('open') && !dragging;
+document.addEventListener('visibilitychange', () => { if (idle()) load(); });
+setInterval(() => { if (idle() && S && S.setup_done) load(); }, 30000);
+
+load();
+</script>
+</body>
+</html>
