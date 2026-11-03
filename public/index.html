@@ -60,7 +60,10 @@
   .count { color: var(--muted); font-size: 13px; font-weight: 500; }
   .col-add { font-size: 20px; line-height: 1; padding: 2px 8px; color: var(--muted); }
   .cards { min-height: 60px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; padding-bottom: 4px; }
-  .empty-col { color: var(--muted); font-size: 14px; text-align: center; padding: 14px 0; pointer-events: none; }
+  /* Empty-column text is drawn by CSS, not as a real element: a real element inside the
+     list makes the drag library treat the column as non-empty and refuse drops. */
+  .board .cards:empty::before { content: attr(data-empty); display: block; color: var(--muted); font-size: 14px;
+    text-align: center; padding: 14px 0; pointer-events: none; }
 
   /* cards */
   .card { background: var(--card); border-radius: 12px; padding: 10px 10px 10px 12px; display: flex; gap: 8px;
@@ -337,14 +340,14 @@ function renderBoard(cat) {
     const isDoneCol = col.id === doneId;
     const tasks = S.tasks.filter((t) => t.column_id === col.id && visible(t));
     if (isDoneCol) tasks.sort((a, b) => (b.done_at || '').localeCompare(a.done_at || ''));
-    const list = el('div', { class: 'cards', 'data-col': col.id },
-      tasks.length ? tasks.map((t) => cardEl(t)) : el('div', { class: 'empty-col' }, isDoneCol ? 'Nothing finished recently' : 'Nothing here'));
+    const list = el('div', { class: 'cards', 'data-col': col.id, 'data-empty': isDoneCol ? 'Nothing finished recently' : 'Nothing here' },
+      tasks.map((t) => cardEl(t)));
     board.append(el('section', { class: 'column' },
       el('div', { class: 'col-head' }, el('h2', {}, col.name, ' ', el('span', { class: 'count' }, tasks.length || '')),
         isDoneCol ? null : el('button', { class: 'col-add', 'aria-label': 'Add to ' + col.name, onclick: () => openNew(cat, col.id) }, '+')),
       list));
     Sortable.create(list, {
-      group: 'cards-' + cat, animation: 150, delay: 180, delayOnTouchOnly: true, filter: '.check, .empty-col',
+      group: 'cards-' + cat, animation: 150, delay: 180, delayOnTouchOnly: true, filter: '.check',
       preventOnFilter: false, sort: !isDoneCol,
       onStart: () => { dragging = true; }, onEnd: onDrop,
     });
