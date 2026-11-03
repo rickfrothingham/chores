@@ -1,6 +1,6 @@
 {
-  "name": "Chores",
-  "short_name": "Chores",
+  "name": "Household",
+  "short_name": "Household",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#f3f1ec",
