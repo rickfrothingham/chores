@@ -4,7 +4,10 @@
 //   columns          board columns. Each belongs to a category ('chore' or 'project').
 //                    Within a category, the LAST column is always "Done".
 //   people           who cards can be assigned to. `email` links a person to a login.
-//   tasks            the cards (category 'chore' or 'project').
+//   tasks            the cards (category 'chore' or 'project'; shown in the app as
+//                    "Chores/Tasks" and "Projects"). `scope` is 'family' (affects the
+//                    household) or 'personal' (one person's own business). Scope is a
+//                    label for filtering, not a privacy setting.
 //   recurrences      templates that create chore cards on a schedule.
 //   checklist_items  steps inside a card (used by projects).
 //   activity         a dated log per card: notes people write, plus automatic
@@ -23,6 +26,8 @@ import { addDays, describe, isYmd, nextOccurrence, todayIn } from './recur.js';
 
 const app = new Hono();
 const CATEGORIES = ['chore', 'project'];
+const SCOPES = ['family', 'personal'];
+const scopeOf = (v) => (SCOPES.includes(v) ? v : 'family');
 const DONE_DAYS_VISIBLE = { chore: 7, project: 30 };
 const COLORS = ['#2f7d6d', '#c0613a', '#6a5acd', '#b8860b', '#2b6cb0', '#b83280', '#4a7c2b', '#7a5c45'];
 
@@ -108,6 +113,11 @@ const MIGRATIONS = [
        by TEXT,
        at TEXT NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS activity_by_task ON activity(task_id, at)`,
+  ],
+  // 3: family / personal flag. Existing items become 'family'.
+  [
+    `ALTER TABLE tasks ADD COLUMN scope TEXT NOT NULL DEFAULT 'family'`,
+    `ALTER TABLE recurrences ADD COLUMN scope TEXT NOT NULL DEFAULT 'family'`,
   ],
 ];
 
@@ -215,9 +225,9 @@ async function housekeeping(db, today) {
       const ts = now();
       stmts.push(
         db.prepare(
-          `INSERT INTO tasks (title, notes, column_id, person_id, position, due_date, recurrence_id, category, created_by, created_at, updated_at, last_activity_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'chore', 'automatic', ?, ?, ?)`
-        ).bind(r.title, r.notes, firstId, r.person_id, await endPosition(db, firstId), due, r.id, ts, ts, ts)
+          `INSERT INTO tasks (title, notes, column_id, person_id, position, due_date, recurrence_id, category, scope, created_by, created_at, updated_at, last_activity_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'chore', ?, 'automatic', ?, ?, ?)`
+        ).bind(r.title, r.notes, firstId, r.person_id, await endPosition(db, firstId), due, r.id, scopeOf(r.scope), ts, ts, ts)
       );
     }
     await db.batch(stmts);
@@ -269,7 +279,7 @@ app.get('/api/state', async (c) => {
     allColumns(db),
     db.prepare('SELECT id, name, color, email FROM people WHERE deleted_at IS NULL ORDER BY position, id').all(),
     db.prepare(
-      `SELECT t.id, t.title, t.notes, t.column_id, t.person_id, t.position, t.due_date, t.recurrence_id, t.category,
+      `SELECT t.id, t.title, t.notes, t.column_id, t.person_id, t.position, t.due_date, t.recurrence_id, t.category, t.scope,
               t.created_by, t.created_at, t.done_at, t.last_activity_at,
               (SELECT COUNT(*) FROM checklist_items i WHERE i.task_id = t.id AND i.deleted_at IS NULL) AS checklist_total,
               (SELECT COUNT(*) FROM checklist_items i WHERE i.task_id = t.id AND i.deleted_at IS NULL AND i.done_at IS NOT NULL) AS checklist_done
@@ -291,7 +301,7 @@ app.get('/api/state', async (c) => {
     recurrences: recs.results.map((r) => ({
       id: r.id, title: r.title, notes: r.notes, person_id: r.person_id, mode: r.mode,
       freq: r.freq, every: r.every, weekdays: ruleOf(r).weekdays, month_day: r.month_day,
-      anchor: r.anchor, interval_days: r.interval_days, next_date: r.next_date, paused: !!r.paused,
+      anchor: r.anchor, interval_days: r.interval_days, next_date: r.next_date, paused: !!r.paused, scope: scopeOf(r.scope),
       description: describe(ruleOf(r)),
     })),
   });
@@ -332,11 +342,11 @@ app.post('/api/tasks', async (c) => {
   const doneId = cols[cols.length - 1].id;
   const res = await db
     .prepare(
-      `INSERT INTO tasks (title, notes, column_id, person_id, position, due_date, category, created_by, created_at, updated_at, last_activity_at, done_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO tasks (title, notes, column_id, person_id, position, due_date, category, scope, created_by, created_at, updated_at, last_activity_at, done_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(title, str(b.notes, 2000), columnId, intOrNull(b.person_id), await endPosition(db, columnId),
-      b.due_date || null, category, c.get('email'), ts, ts, ts, columnId === doneId ? ts : null)
+      b.due_date || null, category, scopeOf(b.scope), c.get('email'), ts, ts, ts, columnId === doneId ? ts : null)
     .run();
   const id = res.meta.last_row_id;
   await db.batch(logStmts(db, id, 'event', 'Created', c.get('email')));
@@ -391,6 +401,11 @@ app.patch('/api/tasks/:id', async (c) => {
     if (b.due_date && !isYmd(b.due_date)) return bad(c, 'Bad due date.');
     const d = b.due_date || null;
     if (d !== task.due_date) { set('due_date', d); events.push(d ? 'Due date set to ' + fmtDate(d) : 'Due date removed'); }
+  }
+
+  if (b.scope !== undefined) {
+    const sc = scopeOf(b.scope);
+    if (sc !== task.scope) { set('scope', sc); events.push(sc === 'personal' ? 'Marked as personal' : 'Marked as family'); }
   }
 
   let completed = false;
@@ -599,10 +614,10 @@ app.delete('/api/people/:id', async (c) => {
   return c.json({ ok: true });
 });
 
-// ---------- Recurring chores ----------
+// ---------- Recurring chores/tasks ----------
 
 function parseRecurrence(b, today) {
-  const r = { title: str(b.title, 120), notes: str(b.notes, 1000), person_id: intOrNull(b.person_id) };
+  const r = { title: str(b.title, 120), notes: str(b.notes, 1000), person_id: intOrNull(b.person_id), scope: scopeOf(b.scope) };
   if (!r.title) return { error: 'Give the task a name.' };
   if (b.mode === 'after_done') {
     const n = parseInt(b.interval_days, 10);
@@ -636,10 +651,10 @@ app.post('/api/recurrences', async (c) => {
   if (r.error) return bad(c, r.error);
   await db
     .prepare(
-      `INSERT INTO recurrences (title, notes, person_id, mode, freq, every, weekdays, month_day, anchor, interval_days, next_date, created_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO recurrences (title, notes, person_id, scope, mode, freq, every, weekdays, month_day, anchor, interval_days, next_date, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .bind(r.title, r.notes, r.person_id, r.mode, r.freq, r.every, r.weekdays, r.month_day, r.anchor, r.interval_days, r.first_date, c.get('email'), now())
+    .bind(r.title, r.notes, r.person_id, r.scope, r.mode, r.freq, r.every, r.weekdays, r.month_day, r.anchor, r.interval_days, r.first_date, c.get('email'), now())
     .run();
   return c.json({ ok: true });
 });
@@ -661,10 +676,10 @@ app.patch('/api/recurrences/:id', async (c) => {
   if (r.mode === 'after_done' && existing && existing.mode === 'after_done' && existing.next_date === null) next = null;
   await db
     .prepare(
-      `UPDATE recurrences SET title=?, notes=?, person_id=?, mode=?, freq=?, every=?, weekdays=?, month_day=?, anchor=?, interval_days=?, next_date=?
+      `UPDATE recurrences SET title=?, notes=?, person_id=?, scope=?, mode=?, freq=?, every=?, weekdays=?, month_day=?, anchor=?, interval_days=?, next_date=?
         WHERE id = ?`
     )
-    .bind(r.title, r.notes, r.person_id, r.mode, r.freq, r.every, r.weekdays, r.month_day, r.anchor, r.interval_days, next, id)
+    .bind(r.title, r.notes, r.person_id, r.scope, r.mode, r.freq, r.every, r.weekdays, r.month_day, r.anchor, r.interval_days, next, id)
     .run();
   return c.json({ ok: true });
 });

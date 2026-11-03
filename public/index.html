@@ -40,13 +40,15 @@
   .hbtn.primary { background: var(--brand); color: var(--brand-ink); border-color: transparent; font-weight: 600; }
   header { flex-wrap: nowrap; }
   @media (max-width: 520px) { .lbl { display: none; } .tabs button { padding: 7px 10px; } .hbtn { padding: 8px 11px; } }
-  @media (max-width: 340px) { .tabs button { padding: 6px 6px !important; font-size: 13px !important; } .hbtn { padding: 7px 8px !important; } }
-  @media (max-width: 400px) { header { gap: 6px; padding-left: 10px; padding-right: 10px; } .tabs button { padding: 7px 8px; font-size: 14px; } .hbtn { padding: 8px 10px; } }
+  @media (max-width: 400px) { header { gap: 5px; padding-left: 10px; padding-right: 10px; } .tabs button { padding: 7px 7px; font-size: 14px; } .hbtn { padding: 8px 9px; } }
+  @media (max-width: 350px) { .tabs { padding: 2px; } .tabs button { padding: 6px 5px !important; font-size: 12.5px !important; } .hbtn { padding: 7px 7px !important; } }
   .filters { display: flex; gap: 6px; padding: 0 14px 10px; overflow-x: auto; scrollbar-width: none; flex: none; }
   .filters::-webkit-scrollbar { display: none; }
   .chip { padding: 6px 12px; border-radius: 999px; background: var(--card); border: 1px solid var(--line);
     font-size: 14px; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
   .chip.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .sep { flex: none; width: 1px; background: var(--line); margin: 4px 4px; }
+  .tag.personal { background: transparent; border: 1px solid var(--line); }
   .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
 
   /* boards */
@@ -152,9 +154,11 @@ const root = $('#root');
 let S = null;                                        // state from the server
 let tab = lsGet('tab') || 'today';                   // 'today' | 'chore' | 'project'
 let filter = lsGet('filter') || 'all';
+let scopeFilter = lsGet('scope') || 'all';           // 'all' | 'family' | 'personal'
 let dragging = false;
 const QUIET_DAYS = 14, STALE_DAYS = 42;              // projects: "quiet" tag, then faded card
-const LABEL = { chore: 'Chore', project: 'Project' };
+const LABEL = { chore: 'Chore/Task', project: 'Project' };
+const SCOPE_LABEL = { family: 'Family', personal: 'Personal' };
 
 function lsGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
 function lsSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
@@ -273,6 +277,7 @@ function renderSetup() {
 
 // ===================== main layout =====================
 function visible(t) {
+  if (scopeFilter !== 'all' && t.scope !== scopeFilter) return false;
   if (filter === 'all') return true;
   if (filter === 'mine') return S.me.person_id != null && t.person_id === S.me.person_id;
   if (filter === 'none') return t.person_id == null;
@@ -287,15 +292,20 @@ function render() {
   const tabBtn = (key, label) => el('button', { class: tab === key ? 'on' : '', onclick: () => { tab = key; lsSet('tab', key); render(); } }, label);
   const addCat = tab === 'project' ? 'project' : 'chore';
   const header = el('header', {},
-    el('div', { class: 'tabs', role: 'tablist' }, tabBtn('today', 'Today'), tabBtn('chore', 'Chores'), tabBtn('project', 'Projects')),
-    tab === 'chore' ? el('button', { class: 'hbtn', onclick: openRecurringList, title: 'Recurring chores', 'aria-label': 'Recurring chores' }, '↻', el('span', { class: 'lbl' }, ' Recurring')) : null,
+    el('div', { class: 'tabs', role: 'tablist' }, tabBtn('today', 'Today'), tabBtn('chore', 'Chores/Tasks'), tabBtn('project', 'Projects')),
+    tab === 'chore' ? el('button', { class: 'hbtn', onclick: openRecurringList, title: 'Recurring chores/tasks', 'aria-label': 'Recurring chores/tasks' }, '↻', el('span', { class: 'lbl' }, ' Recurring')) : null,
     el('button', { class: 'hbtn', onclick: openSettings, 'aria-label': 'Settings' }, '⚙︎'),
-    el('button', { class: 'hbtn primary', onclick: () => openNew(addCat, null), 'aria-label': 'Add' }, '+', el('span', { class: 'lbl' }, tab === 'project' ? ' Project' : tab === 'chore' ? ' Chore' : ' Add')));
+    el('button', { class: 'hbtn primary', onclick: () => openNew(addCat, null), 'aria-label': 'Add' }, '+', el('span', { class: 'lbl' }, tab === 'project' ? ' Project' : tab === 'chore' ? ' Chore/Task' : ' Add')));
 
   const chip = (key, label, color) => el('button', { class: 'chip' + (filter === key ? ' on' : ''),
     onclick: () => { filter = key; lsSet('filter', key); render(); } },
     color ? el('span', { class: 'dot', style: { background: color } }) : null, label);
-  const filters = el('div', { class: 'filters' }, chip('all', 'Everyone'),
+  const scopeChip = (key, label) => el('button', { class: 'chip' + (scopeFilter === key ? ' on' : ''),
+    onclick: () => { scopeFilter = key; lsSet('scope', key); render(); } }, label);
+  const filters = el('div', { class: 'filters' },
+    scopeChip('all', 'All'), scopeChip('family', 'Family'), scopeChip('personal', 'Personal'),
+    el('span', { class: 'sep', 'aria-hidden': 'true' }),
+    chip('all', 'Everyone'),
     S.me.person_id ? chip('mine', 'Mine') : null,
     S.people.map((p) => chip(String(p.id), p.name, p.color)), chip('none', 'Unassigned'));
 
@@ -310,6 +320,7 @@ function cardEl(t, opts = {}) {
   const meta = [];
   if (opts.showCategory) meta.push(el('span', { class: 'tag' }, LABEL[t.category] + ' · ' + colName(t.column_id)));
   if (p) meta.push(el('span', {}, el('span', { class: 'dot', style: { background: p.color } }), p.name));
+  if (t.scope === 'personal') meta.push(el('span', { class: 'tag personal', title: 'Personal' }, 'Personal'));
   if (t.due_date && !done) { const d = dueInfo(t.due_date); meta.push(el('span', { class: d.cls, title: shortDate(t.due_date) }, d.text)); }
   if (t.checklist_total) {
     const pct = Math.round((100 * t.checklist_done) / t.checklist_total);
@@ -419,6 +430,14 @@ function columnPicker(cat, selected, onPick) {
     onclick: () => { selected = c.id; onPick(c.id); draw(); } }, c.name)));
   draw(); return wrap;
 }
+function scopePicker(selected, onPick) {
+  const wrap = el('div');
+  const draw = () => wrap.replaceChildren(el('div', { class: 'seg' }, ['family', 'personal'].map((k) => el('button', { type: 'button', class: selected === k ? 'on' : '',
+    onclick: () => { selected = k; onPick(k); draw(); } }, SCOPE_LABEL[k]))),
+    el('div', { class: 'hint' }, selected === 'personal' ? 'One person’s own business (e.g. a doctor’s appointment).' : 'Affects the household (e.g. repainting the house).'));
+  draw(); return wrap;
+}
+const defaultScope = () => (scopeFilter === 'personal' ? 'personal' : 'family');
 function defaultPerson() {
   if (filter === 'mine') return S.me.person_id;
   if (!['all', 'none'].includes(filter)) return +filter;
@@ -429,7 +448,7 @@ function openCard(t) { t.category === 'project' ? openProject(t.id) : openChore(
 
 // ----- new chore or project -----
 function openNew(cat, columnId) {
-  const f = { category: cat, column_id: columnId, person_id: defaultPerson() };
+  const f = { category: cat, column_id: columnId, person_id: defaultPerson(), scope: defaultScope() };
   const err = el('div', { class: 'err' });
   const title = el('input', { maxlength: 120, placeholder: '' });
   const due = el('input', { type: 'date' });
@@ -440,7 +459,7 @@ function openNew(cat, columnId) {
     catSeg.replaceChildren(...['chore', 'project'].map((k) => el('button', { type: 'button', class: f.category === k ? 'on' : '',
       onclick: () => { f.category = k; draw(); } }, LABEL[k])));
     colWrap.replaceChildren(columnPicker(f.category, f.column_id, (id) => { f.column_id = id; }));
-    title.placeholder = f.category === 'project' ? 'e.g. Repaint the house' : 'e.g. Take out recycling';
+    title.placeholder = f.category === 'project' ? 'e.g. Repaint the house' : 'e.g. Book dentist appointment';
     notes.placeholder = f.category === 'project' ? 'What does done look like? (optional)' : 'Details (optional)';
   };
   draw();
@@ -449,6 +468,7 @@ function openNew(cat, columnId) {
     el('label', { class: 'f' }, 'Type'), catSeg,
     el('label', { class: 'f' }, 'Name'), title,
     el('label', { class: 'f' }, 'Who'), personPicker(f.person_id, (id) => { f.person_id = id; }),
+    el('label', { class: 'f' }, 'For'), scopePicker(f.scope, (v) => { f.scope = v; }),
     el('label', { class: 'f' }, 'Column'), colWrap,
     el('label', { class: 'f' }, 'Due date (optional)'), due,
     el('label', { class: 'f' }, 'Description'), notes,
@@ -457,7 +477,7 @@ function openNew(cat, columnId) {
   form.addEventListener('submit', async (e) => {
     e.preventDefault(); err.textContent = '';
     try {
-      const r = await api('POST', '/api/tasks', { category: f.category, title: title.value, notes: notes.value, person_id: f.person_id,
+      const r = await api('POST', '/api/tasks', { category: f.category, scope: f.scope, title: title.value, notes: notes.value, person_id: f.person_id,
         column_id: f.column_id, due_date: due.value || null });
       if (f.category === 'project') { await refresh(); openProject(r.id); } else closeSheet();
     } catch (x) { err.textContent = x.message; }
@@ -469,17 +489,18 @@ async function refresh() { S = await api('GET', '/api/state'); }
 
 // ----- chore (simple) -----
 function openChore(t) {
-  const f = { person_id: t.person_id, column_id: t.column_id };
+  const f = { person_id: t.person_id, column_id: t.column_id, scope: t.scope };
   const err = el('div', { class: 'err' });
   const title = el('input', { value: t.title, maxlength: 120 });
   const due = el('input', { type: 'date', value: t.due_date || '' });
   const notes = el('textarea', { maxlength: 2000, placeholder: 'Details (optional)' }); notes.value = t.notes;
   const rec = t.recurrence_id ? S.recurrences.find((r) => r.id === t.recurrence_id) : null;
   const form = el('form', {},
-    head('Chore'),
-    rec ? el('div', { class: 'hint' }, '↻ From recurring chore: ' + rec.description + '. Changes here affect only this card.') : null,
+    head('Chore/Task'),
+    rec ? el('div', { class: 'hint' }, '↻ From recurring chore/task: ' + rec.description + '. Changes here affect only this card.') : null,
     el('label', { class: 'f' }, 'Name'), title,
     el('label', { class: 'f' }, 'Who'), personPicker(f.person_id, (id) => { f.person_id = id; }),
+    el('label', { class: 'f' }, 'For'), scopePicker(f.scope, (v) => { f.scope = v; }),
     el('label', { class: 'f' }, 'Column'), columnPicker('chore', f.column_id, (id) => { f.column_id = id; }),
     el('label', { class: 'f' }, 'Due date (optional)'), el('div', { class: 'row' }, due, el('button', { type: 'button', class: 'icon-btn', onclick: () => { due.value = ''; } }, 'Clear')),
     el('label', { class: 'f' }, 'Notes'), notes,
@@ -490,7 +511,7 @@ function openChore(t) {
   form.addEventListener('submit', async (e) => {
     e.preventDefault(); err.textContent = '';
     try {
-      await api('PATCH', '/api/tasks/' + t.id, { title: title.value, notes: notes.value, person_id: f.person_id, column_id: f.column_id, due_date: due.value || null });
+      await api('PATCH', '/api/tasks/' + t.id, { title: title.value, notes: notes.value, person_id: f.person_id, scope: f.scope, column_id: f.column_id, due_date: due.value || null });
       closeSheet();
     } catch (x) { err.textContent = x.message; }
   });
@@ -502,7 +523,7 @@ async function openProject(id) {
   let d;
   try { d = await api('GET', '/api/tasks/' + id); } catch (x) { toast(x.message); return; }
   const t = d.task;
-  const f = { person_id: t.person_id, column_id: t.column_id };
+  const f = { person_id: t.person_id, column_id: t.column_id, scope: t.scope };
   const reopen = async () => { await refresh(); openProject(id); };
   const keepScroll = async (fn) => { const y = sheet.scrollTop; await fn(); await reopen(); sheet.scrollTop = y; };
 
@@ -515,6 +536,7 @@ async function openProject(id) {
   const details = el('form', {},
     el('label', { class: 'f' }, 'Name'), title,
     el('label', { class: 'f' }, 'Who'), personPicker(f.person_id, (pid) => { f.person_id = pid; }),
+    el('label', { class: 'f' }, 'For'), scopePicker(f.scope, (v) => { f.scope = v; }),
     el('label', { class: 'f' }, 'Column'), columnPicker('project', f.column_id, (cid) => { f.column_id = cid; }),
     el('label', { class: 'f' }, 'Deadline (optional)'), el('div', { class: 'row' }, due, el('button', { type: 'button', class: 'icon-btn', onclick: () => { due.value = ''; } }, 'Clear')),
     el('label', { class: 'f' }, 'Description'), notes,
@@ -523,7 +545,7 @@ async function openProject(id) {
   details.addEventListener('submit', async (e) => {
     e.preventDefault(); err.textContent = '';
     try {
-      await keepScroll(() => api('PATCH', '/api/tasks/' + id, { title: title.value, notes: notes.value, person_id: f.person_id, column_id: f.column_id, due_date: due.value || null }));
+      await keepScroll(() => api('PATCH', '/api/tasks/' + id, { title: title.value, notes: notes.value, person_id: f.person_id, scope: f.scope, column_id: f.column_id, due_date: due.value || null }));
       toast('Saved');
     } catch (x) { err.textContent = x.message; }
   });
@@ -573,19 +595,19 @@ function openRecurringList() {
     const whenTxt = r.paused ? 'Paused' : r.next_date ? 'Next card: ' + shortDate(r.next_date) : 'Next card after the current one is done';
     return el('div', { class: 'list-item', style: { cursor: 'pointer' }, onclick: () => openRecurring(r) },
       el('div', { class: 'grow' }, el('div', {}, r.title),
-        el('div', { class: 'small' }, r.description + (p ? ' · ' + p.name : ''), el('br'), whenTxt)),
+        el('div', { class: 'small' }, r.description + (p ? ' · ' + p.name : '') + (r.scope === 'personal' ? ' · Personal' : ''), el('br'), whenTxt)),
       el('span', { class: 'small' }, '›'));
   });
-  openSheet(head('Recurring chores'),
+  openSheet(head('Recurring chores/tasks'),
     el('div', { class: 'hint' }, 'Each one adds a card to “' + colsOf('chore')[0].name + '” when it comes due. If the last card is still open, no duplicate is added.'),
     el('div', { style: { height: '12px' } }),
     items.length ? el('div', { class: 'list' }, items) : el('div', { class: 'hint center' }, 'None yet.'),
-    el('div', { class: 'actions' }, el('button', { class: 'btn primary', onclick: () => openRecurring(null) }, '+ New recurring chore')));
+    el('div', { class: 'actions' }, el('button', { class: 'btn primary', onclick: () => openRecurring(null) }, '+ New recurring chore/task')));
 }
 
 function openRecurring(r) {
   const isNew = !r;
-  const f = r ? { ...r, weekdays: [...r.weekdays] } : { title: '', notes: '', person_id: defaultPerson(), mode: 'schedule', freq: 'weekly', every: 1,
+  const f = r ? { ...r, weekdays: [...r.weekdays] } : { title: '', notes: '', person_id: defaultPerson(), scope: defaultScope(), mode: 'schedule', freq: 'weekly', every: 1,
     weekdays: [new Date(S.today + 'T12:00').getDay()], month_day: +S.today.slice(8, 10), interval_days: 30 };
   const startDefault = r ? (r.mode === 'schedule' ? r.anchor : (r.next_date || S.today)) : S.today;
   const err = el('div', { class: 'err' });
@@ -626,9 +648,10 @@ function openRecurring(r) {
   draw();
 
   const form = el('form', {},
-    head(isNew ? 'New recurring chore' : 'Edit recurring chore'),
-    el('label', { class: 'f' }, 'Chore'), title,
+    head(isNew ? 'New recurring chore/task' : 'Edit recurring chore/task'),
+    el('label', { class: 'f' }, 'Chore/task'), title,
     el('label', { class: 'f' }, 'Who'), personPicker(f.person_id, (id) => { f.person_id = id; }),
+    el('label', { class: 'f' }, 'For'), scopePicker(f.scope || 'family', (v) => { f.scope = v; }),
     el('label', { class: 'f' }, 'Repeats'), modeSeg, detail,
     el('label', { class: 'f' }, 'Notes'), notes,
     isNew ? null : el('div', { class: 'hint' }, 'Saving restarts the schedule from the “Starting” date. Cards already on the board aren’t changed.'),
@@ -640,7 +663,7 @@ function openRecurring(r) {
       el('button', { type: 'submit', class: 'btn primary' }, 'Save')));
   form.addEventListener('submit', async (e) => {
     e.preventDefault(); err.textContent = '';
-    const body = { title: title.value, notes: notes.value, person_id: f.person_id, mode: f.mode, freq: f.freq, every: every.value,
+    const body = { title: title.value, notes: notes.value, person_id: f.person_id, scope: f.scope || 'family', mode: f.mode, freq: f.freq, every: every.value,
       weekdays: f.weekdays, month_day: monthDay.value, interval_days: interval.value, start_date: start.value };
     try { isNew ? await api('POST', '/api/recurrences', body) : await api('PATCH', '/api/recurrences/' + r.id, body); await refresh(); openRecurringList(); }
     catch (x) { err.textContent = x.message; }

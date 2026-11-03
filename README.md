@@ -1,12 +1,17 @@
-# Household board (chores + projects)
+# Household board (chores/tasks + projects)
 
 One app with three views:
 
 - **Today:** what needs attention across both boards. Overdue, due this week, projects gone quiet, coming up in the next 30 days, and projects in progress.
-- **Chores:** small, often recurring tasks on a To do / Doing / Done board.
-- **Projects:** bigger one-off efforts (Ideas / Planned / In progress / Waiting on someone / Done), each with a checklist and an updates log.
+- **Chores/Tasks:** anything that fits on a single card, one-off or recurring, on a To do / Doing / Done board.
+- **Projects:** bigger efforts with multiple steps (Ideas / Planned / In progress / Waiting on someone / Done), each with a checklist and an updates log.
 
-The person chips (Everyone / Mine / each person / Unassigned) filter every view.
+Two sets of filter chips apply to every view and combine with each other:
+
+- **All / Family / Personal:** what the item is for. *Family* affects the household (repainting the house); *Personal* is one person's own business (a doctor's appointment). This is a label for filtering, **not** a privacy setting: everyone can still see everything. New items default to Family, or to Personal while the Personal filter is on.
+- **Everyone / Mine / each person / Unassigned:** who it's assigned to.
+
+Personal items show a small "Personal" tag on the card. Recurring chores/tasks have the flag too, and the cards they create inherit it.
 
 Runs on Cloudflare Workers with a D1 database. Login is handled by Cloudflare Access.
 
@@ -20,7 +25,7 @@ Runs on Cloudflare Workers with a D1 database. Login is handled by Cloudflare Ac
 
 - **Columns** for each board are editable in Settings. The **last column is always Done**. Done chores leave the board after 7 days, done projects after 30 (hidden, not erased).
 - **Moving cards:** drag on an iPad or computer. On a phone, tap a card and choose a column, or tap the circle to mark it done.
-- **Recurring chores** (↻ on the Chores tab) add a card when due, either on a fixed schedule or N days after the last one was done. No duplicates if the previous card is still open.
+- **Recurring chores/tasks** (↻ on the Chores/Tasks tab) add a card when due, either on a fixed schedule or N days after the last one was done. No duplicates if the previous card is still open.
 - Nothing runs on a timer. Due cards are created whenever someone opens the app.
 - The app refreshes every 30 seconds and whenever you return to it.
 
@@ -39,7 +44,7 @@ Runs on Cloudflare Workers with a D1 database. Login is handled by Cloudflare Ac
 
 ## Changing the database later
 
-Schema changes go in the `MIGRATIONS` list in `src/index.js`. Add a new entry at the end and never edit old ones. Each runs once, automatically, on the first request after deploy. Migration 2 (projects) only adds tables and columns; existing chore data is untouched.
+Schema changes go in the `MIGRATIONS` list in `src/index.js`. Add a new entry at the end and never edit old ones. Each runs once, automatically, on the first request after deploy. Migration 2 (projects) and 3 (family/personal flag) only add tables and columns; existing data is untouched. Internally, chores/tasks are still stored with category `chore`.
 
 ## Backup
 
